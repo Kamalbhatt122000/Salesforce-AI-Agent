@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="a2ui-styles.css">
 </head>
 <body>
     <div class="app-container">
@@ -23,7 +24,7 @@
                     </div>
                     <div class="logo-text">
                         <span class="logo-title">Salesforce AI</span>
-                        <span class="logo-subtitle">Agent</span>
+                        <span class="logo-subtitle">Agent · A2UI</span>
                     </div>
                 </div>
             </div>
@@ -132,14 +133,47 @@
                     </button>
                 </div>
                 <div class="input-footer">
-                    <span>Powered by Gemini + Salesforce Skill</span>
+                    <span>Powered by Gemini + A2UI + Salesforce Skill</span>
                 </div>
             </div>
         </main>
     </div>
 
+    <!-- OTP Verification Modal -->
+    <div class="otp-modal-overlay" id="otpModalOverlay">
+        <div class="otp-modal-content">
+            <div class="otp-modal-header">
+                <div class="otp-modal-icon" id="otpModalIcon">🔐</div>
+                <h3>Security Verification</h3>
+                <p>A 6-digit code has been sent to your registered email. Enter it below to proceed.</p>
+            </div>
+            <div class="otp-modal-body">
+                <div class="otp-operation-badge" id="otpOperationBadge">
+                    <span id="otpOperationText">Update Lead record</span>
+                </div>
+                <div class="otp-input-group" id="otpInputGroup">
+                    <input type="text" maxlength="1" class="otp-digit-input" data-index="0" inputmode="numeric" pattern="[0-9]" autocomplete="one-time-code">
+                    <input type="text" maxlength="1" class="otp-digit-input" data-index="1" inputmode="numeric" pattern="[0-9]">
+                    <input type="text" maxlength="1" class="otp-digit-input" data-index="2" inputmode="numeric" pattern="[0-9]">
+                    <input type="text" maxlength="1" class="otp-digit-input" data-index="3" inputmode="numeric" pattern="[0-9]">
+                    <input type="text" maxlength="1" class="otp-digit-input" data-index="4" inputmode="numeric" pattern="[0-9]">
+                    <input type="text" maxlength="1" class="otp-digit-input" data-index="5" inputmode="numeric" pattern="[0-9]">
+                </div>
+                <div class="otp-status-message" id="otpStatusMessage"></div>
+            </div>
+            <div class="otp-modal-footer">
+                <button class="otp-verify-btn" id="otpVerifyBtn" onclick="verifyOtp()" disabled>Verify & Proceed</button>
+                <div class="otp-secondary-actions">
+                    <button class="otp-link-btn" id="otpResendBtn" onclick="resendOtp()">Resend Code</button>
+                    <button class="otp-link-btn cancel" id="otpCancelBtn" onclick="cancelOtp()">Cancel Operation</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+    <script src="a2ui-renderer.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

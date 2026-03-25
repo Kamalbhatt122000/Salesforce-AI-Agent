@@ -28,34 +28,16 @@ Usage:
     count = q.count("Account", "Industry = 'Technology'")
 """
 
-import re
 import requests
 
 
 API_VERSION = "v62.0"
 
 
-def _is_count_only_query(query):
-    """Check if query is a COUNT()-only query (no field aliases, just count)."""
-    # Match: SELECT COUNT() FROM ... (no other fields)
-    return bool(re.match(r'^\s*SELECT\s+COUNT\s*\(\s*\)\s+FROM\s', query, re.IGNORECASE))
-
-
-def _is_aggregate_query(query):
-    """Check if query uses aggregate functions like COUNT(Id), SUM, AVG, etc."""
-    return bool(re.search(r'\b(COUNT|SUM|AVG|MIN|MAX)\s*\(', query, re.IGNORECASE))
-
-
 class SalesforceQuery:
     """SOQL and SOSL query executor with pagination support."""
 
     def __init__(self, auth):
-        """
-        Initialize with an authenticated SalesforceAuth instance.
-
-        Args:
-            auth: SalesforceAuth instance (must be authenticated)
-        """
         self.auth = auth
         self.base_url = f"{auth.instance_url}/services/data/{API_VERSION}"
 
@@ -72,66 +54,20 @@ class SalesforceQuery:
     # ── SOQL ──────────────────────────────────────────────────
 
     def soql(self, query):
-        """
-        Execute a SOQL query. Returns first page of results.
-
-        For COUNT() queries, returns a synthetic record with the count.
-        For aggregate queries (COUNT(Id), SUM, etc.), returns the aggregate records.
-
-        Args:
-            query: SOQL query string
-
-        Returns:
-            list: List of record dicts
-        """
+        """Execute a SOQL query. Returns first page of results."""
         result = self._get(f"{self.base_url}/query/", params={"q": query})
         records = result.get("records", [])
         total = result.get("totalSize", 0)
         done = result.get("done", True)
 
-        # COUNT()-only queries return totalSize but empty records[]
-        if _is_count_only_query(query):
-            print(f"📊 COUNT query returned: {total}")
-            return [{"count": total}]
-
-        # Aggregate queries (COUNT(Id), SUM, etc.) return records with expr0, etc.
-        if _is_aggregate_query(query) and records:
-            # Clean up aggregate records — remove 'attributes' key
-            clean = [{k: v for k, v in r.items() if k != "attributes"} for r in records]
-            print(f"📊 Aggregate query returned {len(clean)} groups")
-            return clean
-
         print(f"📊 SOQL returned {len(records)} of {total} records{'' if done else ' (more available)'}")
         return records
 
     def soql_all(self, query):
-        """
-        Execute SOQL with auto-pagination. Fetches ALL matching records.
-
-        For COUNT() queries, returns a synthetic record with the count.
-
-        Args:
-            query: SOQL query string
-
-        Returns:
-            list: Complete list of all records
-        """
+        """Execute SOQL with auto-pagination. Fetches ALL matching records."""
         result = self._get(f"{self.base_url}/query/", params={"q": query})
-        total = result.get("totalSize", 0)
-
-        # COUNT()-only queries — return the count directly
-        if _is_count_only_query(query):
-            print(f"📊 COUNT query returned: {total}")
-            return [{"count": total}]
-
-        # Aggregate queries — return aggregate records
-        if _is_aggregate_query(query):
-            records = result.get("records", [])
-            clean = [{k: v for k, v in r.items() if k != "attributes"} for r in records]
-            print(f"📊 Aggregate query returned {len(clean)} groups")
-            return clean
-
         all_records = result.get("records", [])
+        total = result.get("totalSize", 0)
 
         page = 1
         while not result.get("done", True):
@@ -144,30 +80,14 @@ class SalesforceQuery:
         return all_records
 
     def soql_first(self, query):
-        """
-        Execute SOQL and return only the first record.
-
-        Args:
-            query: SOQL query string
-
-        Returns:
-            dict or None: First record, or None if no results
-        """
+        """Execute SOQL and return only the first record."""
         records = self.soql(query)
         return records[0] if records else None
 
     # ── SOSL ──────────────────────────────────────────────────
 
     def sosl(self, search_query):
-        """
-        Execute a SOSL search.
-
-        Args:
-            search_query: SOSL query string
-
-        Returns:
-            list: Search results
-        """
+        """Execute a SOSL search."""
         result = self._get(f"{self.base_url}/search/", params={"q": search_query})
         records = result.get("searchRecords", [])
         print(f"🔍 SOSL returned {len(records)} results")
@@ -176,17 +96,7 @@ class SalesforceQuery:
     # ── Convenience Methods ───────────────────────────────────
 
     def find_by_id(self, sobject, record_id, fields=None):
-        """
-        Find a record by its ID.
-
-        Args:
-            sobject: Object API name
-            record_id: Record ID
-            fields: Optional list of field names
-
-        Returns:
-            dict: Record data
-        """
+        """Find a record by its ID."""
         if fields:
             field_str = ", ".join(fields)
         else:
@@ -196,34 +106,13 @@ class SalesforceQuery:
         return self.soql_first(query)
 
     def find_by_field(self, sobject, field_name, field_value, select_fields=None, limit=100):
-        """
-        Find records by a field value.
-
-        Args:
-            sobject: Object API name
-            field_name: Field to filter on
-            field_value: Value to match
-            select_fields: Fields to return (default: Id, Name)
-            limit: Max records (default: 100)
-
-        Returns:
-            list: Matching records
-        """
+        """Find records by a field value."""
         fields = ", ".join(select_fields) if select_fields else "Id, Name"
         query = f"SELECT {fields} FROM {sobject} WHERE {field_name} = '{field_value}' LIMIT {limit}"
         return self.soql(query)
 
     def count(self, sobject, where_clause=None):
-        """
-        Count records in an object.
-
-        Args:
-            sobject: Object API name
-            where_clause: Optional WHERE condition (without 'WHERE')
-
-        Returns:
-            int: Record count
-        """
+        """Count records in an object."""
         query = f"SELECT COUNT() FROM {sobject}"
         if where_clause:
             query += f" WHERE {where_clause}"
@@ -234,15 +123,7 @@ class SalesforceQuery:
         return count
 
     def describe_fields(self, sobject):
-        """
-        Get all field names and types for an object.
-
-        Args:
-            sobject: Object API name
-
-        Returns:
-            list: List of dicts with field 'name', 'type', 'label'
-        """
+        """Get all field names and types for an object."""
         result = self._get(f"{self.base_url}/sobjects/{sobject}/describe/")
         fields = [
             {"name": f["name"], "type": f["type"], "label": f["label"]}
@@ -252,41 +133,26 @@ class SalesforceQuery:
         return fields
 
     def list_objects(self):
-        """
-        List all available objects in the org.
-
-        Returns:
-            list: Object names
-        """
+        """List all available objects in the org."""
         result = self._get(f"{self.base_url}/sobjects/")
         objects = [obj["name"] for obj in result.get("sobjects", [])]
         print(f"📋 Org has {len(objects)} objects")
         return objects
 
 
-# ── Quick Usage ──────────────────────────────────────────────
 if __name__ == "__main__":
     from sf_auth import SalesforceAuth
 
-    # Credentials loaded from .env file automatically
     auth = SalesforceAuth()
     auth.authenticate_simple()
 
     q = SalesforceQuery(auth)
 
-    # List all objects
     objects = q.list_objects()
     print(f"\nFirst 10 objects: {objects[:10]}")
 
-    # Count accounts
     q.count("Account")
 
-    # Query accounts
     accounts = q.soql("SELECT Id, Name, Industry FROM Account LIMIT 5")
     for acc in accounts:
         print(f"  {acc['Name']} — {acc.get('Industry', 'N/A')}")
-
-    # Describe Account fields
-    fields = q.describe_fields("Account")
-    for f in fields[:10]:
-        print(f"  {f['name']} ({f['type']}): {f['label']}")

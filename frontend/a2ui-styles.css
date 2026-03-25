@@ -1,0 +1,404 @@
+/* ═══════════════════════════════════════════════════════════
+   A2UI Surface Styles
+   Google A2UI-inspired design system for agent-generated UIs
+   Reference: https://github.com/google/A2UI
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Surface Container ───────────────────────────────────── */
+.a2ui-surface-container {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.a2ui-surface {
+    border-radius: 14px;
+    overflow: hidden;
+    animation: a2uiSurfaceIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+}
+
+@keyframes a2uiSurfaceIn {
+    from {
+        opacity: 0;
+        transform: translateY(16px) scale(0.97);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* ── A2UI Powered Badge ──────────────────────────────────── */
+.a2ui-surface::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #6366f1, #06b6d4, #10b981, #f59e0b, #6366f1);
+    background-size: 300% 100%;
+    animation: a2uiGradientShift 6s ease infinite;
+    z-index: 1;
+    opacity: 0.7;
+}
+
+@keyframes a2uiGradientShift {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+}
+
+/* ── Column ──────────────────────────────────────────────── */
+.a2ui-column {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.a2ui-column.a2ui-align-center {
+    align-items: center;
+}
+
+.a2ui-column.a2ui-align-start {
+    align-items: flex-start;
+}
+
+.a2ui-column.a2ui-align-end {
+    align-items: flex-end;
+}
+
+.a2ui-column.a2ui-align-stretch {
+    align-items: stretch;
+}
+
+/* ── Row ─────────────────────────────────────────────────── */
+.a2ui-row {
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.a2ui-row.a2ui-align-center {
+    justify-content: center;
+}
+
+.a2ui-row.a2ui-align-start {
+    justify-content: flex-start;
+}
+
+.a2ui-row.a2ui-align-end {
+    justify-content: flex-end;
+}
+
+.a2ui-row.a2ui-align-spaceBetween {
+    justify-content: space-between;
+}
+
+.a2ui-row.a2ui-align-spaceAround {
+    justify-content: space-around;
+}
+
+/* ── Card ────────────────────────────────────────────────── */
+.a2ui-card {
+    background: linear-gradient(145deg, #111118 0%, #161622 60%, #1a1a28 100%);
+    border: 1px solid #2a2a3a;
+    border-radius: 14px;
+    padding: 16px;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.a2ui-card::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.04), transparent 60%);
+    pointer-events: none;
+}
+
+.a2ui-card.a2ui-elevation-1 {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.a2ui-card.a2ui-elevation-2 {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.a2ui-card.a2ui-elevation-3 {
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Text Variants ───────────────────────────────────────── */
+.a2ui-text {
+    line-height: 1.6;
+}
+
+.a2ui-heading-1 {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: #e8e8f0;
+    margin: 0;
+    background: linear-gradient(135deg, #e8e8f0, #c4c4d8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.a2ui-heading-2 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+    color: #e8e8f0;
+    margin: 0;
+}
+
+.a2ui-heading-3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #b4b4c8;
+    margin: 0;
+}
+
+.a2ui-subtitle {
+    font-size: 13px;
+    color: #9494a8;
+    font-weight: 400;
+}
+
+.a2ui-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #6b6b80;
+}
+
+.a2ui-body {
+    font-size: 14px;
+    color: #c4c4d8;
+    line-height: 1.7;
+}
+
+/* ── Divider ─────────────────────────────────────────────── */
+.a2ui-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #2a2a3a, transparent);
+    margin: 8px 0;
+}
+
+/* ── Image ───────────────────────────────────────────────── */
+.a2ui-image {
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.a2ui-image img {
+    width: 100%;
+    height: auto;
+    display: block;
+    object-fit: cover;
+}
+
+/* ── Badge ───────────────────────────────────────────────── */
+.a2ui-badge {
+    display: inline-flex;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    background: rgba(99, 102, 241, 0.12);
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+/* ── Spacer ──────────────────────────────────────────────── */
+.a2ui-spacer {
+    flex-shrink: 0;
+}
+
+/* ── Icon ────────────────────────────────────────────────── */
+.a2ui-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #818cf8;
+}
+
+/* ── Stats Card ──────────────────────────────────────────── */
+.a2ui-stats-card {
+    display: flex;
+    background: linear-gradient(145deg, #111118, #161622);
+    border: 1px solid #2a2a3a;
+    border-radius: 12px;
+    overflow: hidden;
+    transition: all 0.3s ease;
+    min-width: 140px;
+}
+
+.a2ui-stats-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+    border-color: #33334a;
+}
+
+.a2ui-stats-accent {
+    width: 4px;
+    flex-shrink: 0;
+}
+
+.a2ui-stats-body {
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.a2ui-stats-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #6b6b80;
+}
+
+.a2ui-stats-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: #e8e8f0;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+}
+
+.a2ui-stats-trend {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* ── Chart Surface ───────────────────────────────────────── */
+.a2ui-chart-surface {
+    background: linear-gradient(145deg, #0f0f1a 0%, #141420 50%, #181828 100%);
+    border: 1px solid #2a2a3a;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow:
+        0 4px 24px rgba(0, 0, 0, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    position: relative;
+}
+
+.a2ui-chart-surface::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(ellipse at top right, rgba(6, 182, 212, 0.05), transparent 60%),
+                radial-gradient(ellipse at bottom left, rgba(99, 102, 241, 0.05), transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.a2ui-chart-header {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    background: linear-gradient(135deg,
+        rgba(99, 102, 241, 0.08) 0%,
+        rgba(6, 182, 212, 0.05) 50%,
+        rgba(16, 185, 129, 0.03) 100%);
+    border-bottom: 1px solid rgba(42, 42, 58, 0.8);
+}
+
+.a2ui-chart-icon {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(6, 182, 212, 0.15));
+    border-radius: 8px;
+    color: #818cf8;
+}
+
+.a2ui-chart-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e8e8f0;
+    letter-spacing: -0.2px;
+    flex: 1;
+}
+
+.a2ui-chart-badge {
+    display: inline-flex;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(6, 182, 212, 0.12));
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.a2ui-chart-canvas-wrapper {
+    position: relative;
+    z-index: 1;
+    padding: 16px 16px 12px;
+    height: 340px;
+}
+
+.a2ui-chart-canvas-wrapper canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
+/* ── Unknown Component ───────────────────────────────────── */
+.a2ui-unknown {
+    padding: 8px 12px;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-radius: 8px;
+    color: #ef4444;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* ── Responsive ──────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .a2ui-chart-canvas-wrapper {
+        height: 260px;
+        padding: 12px;
+    }
+
+    .a2ui-row {
+        flex-direction: column;
+    }
+
+    .a2ui-stats-card {
+        min-width: unset;
+        width: 100%;
+    }
+
+    .a2ui-heading-1 {
+        font-size: 18px;
+    }
+
+    .a2ui-stats-value {
+        font-size: 22px;
+    }
+}

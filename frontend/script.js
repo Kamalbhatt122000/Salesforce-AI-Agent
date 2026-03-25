@@ -77,8 +77,13 @@ async function sendMessage() {
         if (data.error) {
             addMessage("agent", `**Error:** ${data.error}`, [], []);
         } else {
-            // Show tool calls and charts
-            addMessage("agent", data.reply, data.tool_calls || [], data.charts || []);
+            // Show tool calls, charts, and A2UI surfaces
+            addMessage("agent", data.reply, data.tool_calls || [], data.charts || [], data.a2ui_surfaces || []);
+
+            // Check if OTP verification is required
+            if (data.otp_required && data.otp_session_key) {
+                showOtpModal(data.otp_session_key, data.otp_operation, data.otp_object, data.otp_record_id);
+            }
         }
 
     } catch (e) {
@@ -90,6 +95,230 @@ async function sendMessage() {
     updateSendBtn();
     input.focus();
 }
+
+
+// ── OTP Verification System ─────────────────────────────────
+
+let currentOtpSessionKey = "";
+let otpVerifying = false;
+
+function showOtpModal(sessionKey, operation, objectName, recordId) {
+    currentOtpSessionKey = sessionKey;
+    const overlay = document.getElementById("otpModalOverlay");
+    const badge = document.getElementById("otpOperationBadge");
+    const badgeText = document.getElementById("otpOperationText");
+    const statusMsg = document.getElementById("otpStatusMessage");
+    const verifyBtn = document.getElementById("otpVerifyBtn");
+
+    // Set operation badge
+    const opLabel = operation === "delete" ? "DELETE" : "UPDATE";
+    badgeText.textContent = `${opLabel} ${objectName} (${recordId})`;
+    badge.className = `otp-operation-badge${operation === "delete" ? " delete" : ""}`;
+
+    // Reset state
+    statusMsg.textContent = "";
+    statusMsg.className = "otp-status-message";
+    verifyBtn.disabled = true;
+    verifyBtn.classList.remove("loading");
+    verifyBtn.textContent = "Verify & Proceed";
+
+    // Clear OTP inputs
+    const inputs = document.querySelectorAll(".otp-digit-input");
+    inputs.forEach(inp => {
+        inp.value = "";
+        inp.classList.remove("error", "success");
+    });
+
+    // Show modal
+    overlay.classList.add("active");
+
+    // Focus first input
+    setTimeout(() => inputs[0].focus(), 100);
+}
+
+function closeOtpModal() {
+    const overlay = document.getElementById("otpModalOverlay");
+    overlay.classList.remove("active");
+    currentOtpSessionKey = "";
+}
+
+function getOtpValue() {
+    const inputs = document.querySelectorAll(".otp-digit-input");
+    return Array.from(inputs).map(i => i.value).join("");
+}
+
+async function verifyOtp() {
+    if (otpVerifying) return;
+    const otp = getOtpValue();
+    if (otp.length !== 6) return;
+
+    otpVerifying = true;
+    const verifyBtn = document.getElementById("otpVerifyBtn");
+    const statusMsg = document.getElementById("otpStatusMessage");
+    const inputs = document.querySelectorAll(".otp-digit-input");
+
+    verifyBtn.classList.add("loading");
+    verifyBtn.textContent = "Verifying...";
+    statusMsg.textContent = "";
+    statusMsg.className = "otp-status-message info";
+
+    try {
+        const res = await fetch(`${API_BASE}/api/otp/verify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_key: currentOtpSessionKey, otp: otp }),
+        });
+
+        const data = await res.json();
+
+        if (data.verified && data.success) {
+            // Success
+            inputs.forEach(inp => inp.classList.add("success"));
+            statusMsg.textContent = "✅ Verification successful!";
+            statusMsg.className = "otp-status-message success";
+            verifyBtn.textContent = "✅ Verified";
+
+            // Add success message to chat
+            addOtpResultMessage(data.message, "success");
+
+            // Close modal after brief delay
+            setTimeout(() => closeOtpModal(), 1200);
+        } else {
+            // Failed
+            inputs.forEach(inp => inp.classList.add("error"));
+            statusMsg.textContent = data.error || "Verification failed.";
+            statusMsg.className = "otp-status-message error";
+            verifyBtn.textContent = "Verify & Proceed";
+            verifyBtn.classList.remove("loading");
+
+            // Remove error styling after animation
+            setTimeout(() => {
+                inputs.forEach(inp => {
+                    inp.classList.remove("error");
+                    inp.value = "";
+                });
+                inputs[0].focus();
+                verifyBtn.disabled = true;
+            }, 800);
+        }
+    } catch (e) {
+        statusMsg.textContent = "Network error. Please try again.";
+        statusMsg.className = "otp-status-message error";
+        verifyBtn.textContent = "Verify & Proceed";
+        verifyBtn.classList.remove("loading");
+    }
+
+    otpVerifying = false;
+}
+
+async function resendOtp() {
+    const statusMsg = document.getElementById("otpStatusMessage");
+    const resendBtn = document.getElementById("otpResendBtn");
+    const inputs = document.querySelectorAll(".otp-digit-input");
+
+    resendBtn.disabled = true;
+    resendBtn.textContent = "Sending...";
+    statusMsg.textContent = "";
+
+    try {
+        const res = await fetch(`${API_BASE}/api/otp/resend`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_key: currentOtpSessionKey }),
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            statusMsg.textContent = "📧 New code sent! Check your email.";
+            statusMsg.className = "otp-status-message success";
+            // Clear inputs
+            inputs.forEach(inp => { inp.value = ""; inp.classList.remove("error", "success"); });
+            inputs[0].focus();
+            document.getElementById("otpVerifyBtn").disabled = true;
+        } else {
+            statusMsg.textContent = data.error || "Failed to resend code.";
+            statusMsg.className = "otp-status-message error";
+        }
+    } catch (e) {
+        statusMsg.textContent = "Network error. Please try again.";
+        statusMsg.className = "otp-status-message error";
+    }
+
+    resendBtn.disabled = false;
+    resendBtn.textContent = "Resend Code";
+}
+
+function cancelOtp() {
+    closeOtpModal();
+    addOtpResultMessage("⚠️ Operation cancelled — verification was not completed.", "denied");
+}
+
+function addOtpResultMessage(text, type) {
+    const container = document.getElementById("messagesContainer");
+    const msgDiv = document.createElement("div");
+    msgDiv.className = `otp-result-message ${type}`;
+    msgDiv.textContent = text;
+
+    // Find the last agent message and append to its content
+    const messages = container.querySelectorAll(".message.agent");
+    if (messages.length > 0) {
+        const lastAgent = messages[messages.length - 1];
+        const contentDiv = lastAgent.querySelector(".message-content");
+        if (contentDiv) {
+            contentDiv.appendChild(msgDiv);
+            container.scrollTop = container.scrollHeight;
+            return;
+        }
+    }
+
+    // Fallback: add as standalone
+    container.appendChild(msgDiv);
+    container.scrollTop = container.scrollHeight;
+}
+
+// ── OTP Input Handlers (auto-focus, paste support) ──────────
+document.addEventListener("DOMContentLoaded", () => {
+    const inputs = document.querySelectorAll(".otp-digit-input");
+
+    inputs.forEach((input, idx) => {
+        input.addEventListener("input", (e) => {
+            const val = e.target.value.replace(/[^0-9]/g, "");
+            e.target.value = val;
+
+            if (val && idx < inputs.length - 1) {
+                inputs[idx + 1].focus();
+            }
+
+            // Enable verify button when all 6 digits are entered
+            const otp = getOtpValue();
+            document.getElementById("otpVerifyBtn").disabled = otp.length !== 6;
+        });
+
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Backspace" && !e.target.value && idx > 0) {
+                inputs[idx - 1].focus();
+                inputs[idx - 1].value = "";
+            }
+            if (e.key === "Enter") {
+                const otp = getOtpValue();
+                if (otp.length === 6) verifyOtp();
+            }
+        });
+
+        // Handle paste
+        input.addEventListener("paste", (e) => {
+            e.preventDefault();
+            const pasted = (e.clipboardData.getData("text") || "").replace(/[^0-9]/g, "").slice(0, 6);
+            for (let i = 0; i < pasted.length && i < inputs.length; i++) {
+                inputs[i].value = pasted[i];
+            }
+            const focusIdx = Math.min(pasted.length, inputs.length - 1);
+            inputs[focusIdx].focus();
+            document.getElementById("otpVerifyBtn").disabled = pasted.length !== 6;
+        });
+    });
+});
 
 // ── Quick Message ───────────────────────────────────────────
 function sendQuickMessage(text) {
@@ -104,9 +333,9 @@ function sendQuickMessage(text) {
 }
 
 // ── Add Message to Chat ─────────────────────────────────────
-let chartCounter = 0;
 
-function addMessage(role, content, toolCalls = [], charts = []) {
+
+function addMessage(role, content, toolCalls = [], charts = [], a2uiSurfaces = []) {
     const container = document.getElementById("messagesContainer");
 
     const messageDiv = document.createElement("div");
@@ -146,11 +375,22 @@ function addMessage(role, content, toolCalls = [], charts = []) {
 
     contentDiv.appendChild(bubble);
 
-    // Render charts if any
+    // Render charts via A2UI pipeline
     if (charts && charts.length > 0) {
         charts.forEach(chartConfig => {
-            const chartWrapper = renderChart(chartConfig);
-            contentDiv.appendChild(chartWrapper);
+            // Convert legacy chart config to A2UI messages and render
+            const a2uiSurface = window.A2UI.renderChart(chartConfig);
+            contentDiv.appendChild(a2uiSurface);
+        });
+    }
+
+    // Render any raw A2UI surfaces directly from the backend
+    if (a2uiSurfaces && a2uiSurfaces.length > 0) {
+        a2uiSurfaces.forEach(surfaceMessages => {
+            const surfaceEl = window.A2UI.renderSurface(surfaceMessages);
+            if (surfaceEl) {
+                contentDiv.appendChild(surfaceEl);
+            }
         });
     }
 
@@ -162,220 +402,10 @@ function addMessage(role, content, toolCalls = [], charts = []) {
     container.scrollTop = container.scrollHeight;
 }
 
-// ── Chart Rendering ─────────────────────────────────────────
-// Register the datalabels plugin globally
+// ── Chart Rendering (now via A2UI) ──────────────────────────
+// Charts are rendered through the A2UI pipeline.
+// The ChartDataLabels plugin is registered globally for Chart.js.
 Chart.register(ChartDataLabels);
-
-const CHART_COLORS = [
-    '#6366f1', // indigo
-    '#06b6d4', // cyan
-    '#10b981', // emerald
-    '#f59e0b', // amber
-    '#ef4444', // red
-    '#8b5cf6', // violet
-    '#ec4899', // pink
-    '#14b8a6', // teal
-    '#f97316', // orange
-    '#3b82f6', // blue
-    '#84cc16', // lime
-    '#a855f7', // purple
-    '#e11d48', // rose
-    '#0ea5e9', // sky
-    '#22c55e', // green
-];
-
-const CHART_BG_COLORS = CHART_COLORS.map(c => c + '33'); // 20% opacity
-
-function renderChart(config) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "chart-container";
-
-    const header = document.createElement("div");
-    header.className = "chart-header";
-    header.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="20" x2="18" y2="10"/>
-            <line x1="12" y1="20" x2="12" y2="4"/>
-            <line x1="6" y1="20" x2="6" y2="14"/>
-        </svg>
-        <span>${config.title}</span>
-    `;
-    wrapper.appendChild(header);
-
-    const canvasWrapper = document.createElement("div");
-    canvasWrapper.className = "chart-canvas-wrapper";
-    const canvas = document.createElement("canvas");
-    const chartId = `chart-${++chartCounter}`;
-    canvas.id = chartId;
-    canvasWrapper.appendChild(canvas);
-    wrapper.appendChild(canvasWrapper);
-
-    // Determine Chart.js type
-    let chartType = config.chart_type;
-    let indexAxis = undefined;
-    if (chartType === "horizontalBar") {
-        chartType = "bar";
-        indexAxis = "y";
-    }
-
-    const isPieType = (chartType === "pie" || chartType === "doughnut");
-    const totalValue = config.data.reduce((a, b) => a + b, 0);
-
-    // Build dataset
-    const dataset = {
-        label: config.dataset_label,
-        data: config.data,
-        borderWidth: isPieType ? 2 : 2,
-        borderRadius: isPieType ? 0 : 6,
-        borderSkipped: false,
-    };
-
-    if (isPieType) {
-        dataset.backgroundColor = config.data.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
-        dataset.borderColor = '#1a1a24';
-    } else if (chartType === "line") {
-        dataset.borderColor = CHART_COLORS[0];
-        dataset.backgroundColor = CHART_BG_COLORS[0];
-        dataset.fill = true;
-        dataset.tension = 0.4;
-        dataset.pointBackgroundColor = CHART_COLORS[0];
-        dataset.pointBorderColor = '#fff';
-        dataset.pointBorderWidth = 2;
-        dataset.pointRadius = 5;
-        dataset.pointHoverRadius = 7;
-    } else {
-        // Bar
-        dataset.backgroundColor = config.data.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
-        dataset.borderColor = config.data.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
-    }
-
-    // Smart datalabels config based on chart type
-    let datalabelsConfig;
-    if (isPieType) {
-        // Pie/Doughnut: show "count (percent%)" inside slices
-        datalabelsConfig = {
-            color: '#fff',
-            font: { family: "'Inter', sans-serif", weight: '600', size: 12 },
-            textShadowColor: 'rgba(0,0,0,0.5)',
-            textShadowBlur: 4,
-            formatter: (value) => {
-                const pct = ((value / totalValue) * 100).toFixed(1);
-                return `${value}\n(${pct}%)`;
-            },
-            // Hide label if slice is too small (<5%)
-            display: (context) => {
-                const pct = (context.dataset.data[context.dataIndex] / totalValue) * 100;
-                return pct >= 5;
-            },
-            anchor: 'center',
-            align: 'center',
-            textAlign: 'center',
-        };
-    } else if (chartType === "line") {
-        // Line: show value above each point
-        datalabelsConfig = {
-            color: '#e8e8f0',
-            font: { family: "'Inter', sans-serif", weight: '600', size: 11 },
-            anchor: 'end',
-            align: 'top',
-            offset: 4,
-            formatter: (value) => value,
-        };
-    } else {
-        // Bar: show count on top of each bar
-        datalabelsConfig = {
-            color: '#e8e8f0',
-            font: { family: "'Inter', sans-serif", weight: '600', size: 12 },
-            anchor: indexAxis === 'y' ? 'end' : 'end',
-            align: indexAxis === 'y' ? 'right' : 'top',
-            offset: 4,
-            formatter: (value) => value,
-        };
-    }
-
-    // After appending to DOM, create the chart
-    setTimeout(() => {
-        const ctx = document.getElementById(chartId);
-        if (!ctx) return;
-
-        new Chart(ctx, {
-            type: chartType,
-            data: {
-                labels: config.labels,
-                datasets: [dataset],
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: indexAxis || 'x',
-                animation: {
-                    duration: 1000,
-                    easing: 'easeOutQuart',
-                },
-                layout: {
-                    padding: { top: isPieType ? 10 : 20, right: indexAxis === 'y' ? 40 : 10 },
-                },
-                plugins: {
-                    legend: {
-                        display: isPieType,
-                        position: 'bottom',
-                        labels: {
-                            color: '#9494a8',
-                            font: { family: "'Inter', sans-serif", size: 12 },
-                            padding: 16,
-                            usePointStyle: true,
-                            pointStyleWidth: 10,
-                        },
-                    },
-                    tooltip: {
-                        backgroundColor: '#1a1a24',
-                        titleColor: '#e8e8f0',
-                        bodyColor: '#9494a8',
-                        borderColor: '#2a2a3a',
-                        borderWidth: 1,
-                        padding: 12,
-                        cornerRadius: 8,
-                        titleFont: { family: "'Inter', sans-serif", weight: '600' },
-                        bodyFont: { family: "'Inter', sans-serif" },
-                        displayColors: true,
-                        boxPadding: 4,
-                        callbacks: isPieType ? {
-                            label: (context) => {
-                                const val = context.parsed;
-                                const pct = ((val / totalValue) * 100).toFixed(1);
-                                return ` ${context.label}: ${val} (${pct}%)`;
-                            }
-                        } : {},
-                    },
-                    datalabels: datalabelsConfig,
-                },
-                scales: isPieType ? {} : {
-                    x: {
-                        grid: { color: '#2a2a3a22', drawBorder: false },
-                        ticks: {
-                            color: '#9494a8',
-                            font: { family: "'Inter', sans-serif", size: 11 },
-                            maxRotation: 45,
-                        },
-                        border: { display: false },
-                    },
-                    y: {
-                        grid: { color: '#2a2a3a44', drawBorder: false },
-                        ticks: {
-                            color: '#9494a8',
-                            font: { family: "'Inter', sans-serif", size: 11 },
-                            precision: 0,
-                        },
-                        border: { display: false },
-                        beginAtZero: true,
-                    },
-                },
-            },
-        });
-    }, 50);
-
-    return wrapper;
-}
 
 // ── Typing Indicator ────────────────────────────────────────
 let typingCounter = 0;
