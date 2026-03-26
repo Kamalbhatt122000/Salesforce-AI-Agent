@@ -1,5 +1,7 @@
 /* ── Reset & Base ────────────────────────────────────────── */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
@@ -137,13 +139,27 @@ body {
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
 }
 
 @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.3;
+    }
 }
 
 .sidebar-section {
@@ -276,6 +292,88 @@ body {
     color: var(--text-muted);
 }
 
+/* ── Header Persona Badge ────────────────────────────────── */
+.header-persona {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.persona-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(6, 182, 212, 0.08));
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    white-space: nowrap;
+}
+
+.persona-scope {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    white-space: nowrap;
+}
+
+/* ── Sidebar Viewer Context ──────────────────────────────── */
+.sidebar-viewer {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(145deg, rgba(99, 102, 241, 0.04), rgba(6, 182, 212, 0.02));
+}
+
+.viewer-persona {
+    font-size: 13px;
+    font-weight: 600;
+    color: #818cf8;
+    margin-bottom: 2px;
+}
+
+.viewer-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    letter-spacing: -0.2px;
+}
+
+.viewer-scope {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+/* ── Sidebar Sections Scroll ─────────────────────────────── */
+.sidebar {
+    overflow-y: auto;
+}
+
+.sidebar::-webkit-scrollbar {
+    width: 4px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
+}
+
 /* ── Messages ────────────────────────────────────────────── */
 .messages-container {
     flex: 1;
@@ -310,8 +408,15 @@ body {
 }
 
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .welcome-icon {
@@ -320,8 +425,15 @@ body {
 }
 
 @keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-8px); }
+
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-8px);
+    }
 }
 
 .welcome-screen h2 {
@@ -379,8 +491,15 @@ body {
 }
 
 @keyframes messageIn {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .message.user {
@@ -462,20 +581,36 @@ body {
 }
 
 @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 /* Markdown content styling */
-.message-bubble h1, .message-bubble h2, .message-bubble h3 {
+.message-bubble h1,
+.message-bubble h2,
+.message-bubble h3 {
     margin: 16px 0 8px 0;
     font-weight: 600;
     letter-spacing: -0.3px;
 }
 
-.message-bubble h1 { font-size: 18px; }
-.message-bubble h2 { font-size: 16px; }
-.message-bubble h3 { font-size: 14px; color: var(--text-secondary); }
+.message-bubble h1 {
+    font-size: 18px;
+}
+
+.message-bubble h2 {
+    font-size: 16px;
+}
+
+.message-bubble h3 {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
 
 .message-bubble p {
     margin: 8px 0;
@@ -508,7 +643,8 @@ body {
     color: var(--text-primary);
 }
 
-.message-bubble ul, .message-bubble ol {
+.message-bubble ul,
+.message-bubble ol {
     padding-left: 20px;
     margin: 8px 0;
 }
@@ -524,7 +660,8 @@ body {
     font-size: 13px;
 }
 
-.message-bubble th, .message-bubble td {
+.message-bubble th,
+.message-bubble td {
     border: 1px solid var(--border);
     padding: 8px 12px;
     text-align: left;
@@ -575,12 +712,27 @@ body {
     animation: typingBounce 1.4s ease-in-out infinite;
 }
 
-.typing-dot:nth-child(2) { animation-delay: 0.2s; }
-.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+.typing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+    animation-delay: 0.4s;
+}
 
 @keyframes typingBounce {
-    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-    30% { transform: translateY(-6px); opacity: 1; }
+
+    0%,
+    60%,
+    100% {
+        transform: translateY(0);
+        opacity: 0.4;
+    }
+
+    30% {
+        transform: translateY(-6px);
+        opacity: 1;
+    }
 }
 
 /* ── Input Area ──────────────────────────────────────────── */
@@ -673,8 +825,15 @@ body {
 }
 
 @keyframes chartFadeIn {
-    from { opacity: 0; transform: translateY(12px) scale(0.98); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.98);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
 }
 
 .chart-header {
@@ -744,7 +903,10 @@ body {
 .otp-modal-overlay {
     display: none;
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     z-index: 9999;
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(8px);
@@ -759,8 +921,13 @@ body {
 }
 
 @keyframes otpOverlayIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
 }
 
 .otp-modal-content {
@@ -774,8 +941,15 @@ body {
 }
 
 @keyframes otpModalIn {
-    from { opacity: 0; transform: translateY(20px) scale(0.95); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from {
+        opacity: 0;
+        transform: translateY(20px) scale(0.95);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
 }
 
 .otp-modal-header {
@@ -799,8 +973,15 @@ body {
 }
 
 @keyframes otpIconPulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.2); }
-    50% { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0); }
+
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.2);
+    }
+
+    50% {
+        box-shadow: 0 0 0 8px rgba(99, 102, 241, 0);
+    }
 }
 
 .otp-modal-header h3 {
@@ -881,10 +1062,23 @@ body {
 }
 
 @keyframes otpShake {
-    0%, 100% { transform: translateX(0); }
-    25% { transform: translateX(-6px); }
-    50% { transform: translateX(6px); }
-    75% { transform: translateX(-4px); }
+
+    0%,
+    100% {
+        transform: translateX(0);
+    }
+
+    25% {
+        transform: translateX(-6px);
+    }
+
+    50% {
+        transform: translateX(6px);
+    }
+
+    75% {
+        transform: translateX(-4px);
+    }
 }
 
 .otp-status-message {

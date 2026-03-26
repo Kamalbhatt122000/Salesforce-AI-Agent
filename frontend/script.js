@@ -6,6 +6,7 @@ let isWaiting = false;
 // ── Initialize ──────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
     checkStatus();
+    loadViewerContext();
     document.getElementById("messageInput").focus();
 });
 
@@ -35,6 +36,71 @@ async function checkStatus() {
     } catch (e) {
         document.getElementById("headerStatus").textContent = "Server offline";
         document.getElementById("headerStatus").style.color = "#ef4444";
+    }
+}
+
+// ── Viewer Context (Permission-Aware Persona) ────────────────
+const PERSONA_LABELS = {
+    sales_rep:       { icon: "🧑‍💼", label: "Sales Rep" },
+    sales_manager:   { icon: "📊", label: "Sales Manager" },
+    exec:            { icon: "🏢", label: "Executive" },
+    sales_ops:       { icon: "⚙️", label: "Sales Ops" },
+    service_manager: { icon: "🎧", label: "Service Manager" },
+    service_agent:   { icon: "💬", label: "Service Agent" },
+};
+
+const PERSONA_WELCOME = {
+    sales_rep:       "Here's your personal dashboard — pipeline, tasks, and deals that need your attention.",
+    sales_manager:   "Here's your team overview — performance, forecast, and deals needing focus.",
+    exec:            "Here's your executive summary — revenue trends, forecast, and top risks.",
+    sales_ops:       "Here's your ops dashboard — data quality, pipeline health, and hygiene issues.",
+    service_manager: "Here's your service overview — SLA risk, open cases, and agent workload.",
+    service_agent:   "Here are your active cases and tasks due today.",
+};
+
+async function loadViewerContext() {
+    try {
+        const res = await fetch(`${API_BASE}/api/viewer-context`);
+        if (!res.ok) return;
+        const ctx = await res.json();
+        if (ctx.error) return;
+
+        const persona = ctx.persona || "sales_rep";
+        const personaInfo = PERSONA_LABELS[persona] || { icon: "👤", label: persona };
+        const scope = ctx.scope || "self";
+        const scopeLabel = scope === "global" ? "All Data" : scope === "team" ? "Team View" : "My Records";
+        const name = ctx.full_name || ctx.email || "";
+
+        // Header persona badge
+        const headerPersona = document.getElementById("headerPersona");
+        const personaBadge  = document.getElementById("personaBadge");
+        const personaScope  = document.getElementById("personaScope");
+        if (headerPersona && personaBadge && personaScope) {
+            personaBadge.textContent = `${personaInfo.icon} ${personaInfo.label}`;
+            personaScope.textContent = scopeLabel;
+            headerPersona.style.display = "flex";
+        }
+
+        // Sidebar viewer block
+        const viewerCtxEl = document.getElementById("viewerContext");
+        const viewerPersonaEl = document.getElementById("viewerPersona");
+        const viewerNameEl   = document.getElementById("viewerName");
+        const viewerScopeEl  = document.getElementById("viewerScope");
+        if (viewerCtxEl && viewerPersonaEl && viewerNameEl && viewerScopeEl) {
+            viewerPersonaEl.textContent = `${personaInfo.icon} ${personaInfo.label}`;
+            viewerNameEl.textContent = name;
+            viewerScopeEl.textContent = `Scope: ${scopeLabel} · ${ctx.currency || "USD"}`;
+            viewerCtxEl.style.display = "block";
+        }
+
+        // Update welcome message
+        const welcomeMsg = document.getElementById("welcomePersonaMsg");
+        if (welcomeMsg) {
+            welcomeMsg.textContent = PERSONA_WELCOME[persona] || PERSONA_WELCOME.sales_rep;
+        }
+
+    } catch (e) {
+        // Silently ignore
     }
 }
 
@@ -378,13 +444,20 @@ function addMessage(role, content, toolCalls = [], charts = [], a2uiSurfaces = [
     // Render charts via A2UI pipeline
     if (charts && charts.length > 0) {
         charts.forEach(chartConfig => {
-            // Convert legacy chart config to A2UI messages and render
+            // Skip charts with empty data (would render as empty boxes)
+            if (!chartConfig.labels || !chartConfig.data ||
+                chartConfig.labels.length === 0 || chartConfig.data.length === 0) {
+                console.warn('[Chart] Skipping chart with empty data:', chartConfig.title);
+                return;
+            }
+            console.log('[Chart] Rendering:', chartConfig.title, chartConfig.chart_type,
+                         'labels:', chartConfig.labels.length, 'data:', chartConfig.data.length);
             const a2uiSurface = window.A2UI.renderChart(chartConfig);
             contentDiv.appendChild(a2uiSurface);
         });
     }
 
-    // Render any raw A2UI surfaces directly from the backend
+    // Render any raw A2UI surfaces directly from the backend (KPI cards, etc.)
     if (a2uiSurfaces && a2uiSurfaces.length > 0) {
         a2uiSurfaces.forEach(surfaceMessages => {
             const surfaceEl = window.A2UI.renderSurface(surfaceMessages);

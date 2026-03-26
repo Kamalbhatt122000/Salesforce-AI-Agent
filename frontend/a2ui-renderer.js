@@ -115,10 +115,13 @@ function registerA2UIComponent(typeName, renderFn) {
 
 
 // ── A2UI Renderer ───────────────────────────────────────────
+// Global chart ID counter — shared across all renderer instances so every
+// canvas element gets a unique ID even when multiple renderers are created.
+let _globalChartCounter = 0;
+
 class A2UIRenderer {
     constructor(processor) {
         this.processor = processor;
-        this.chartCounter = 0;
     }
 
     /**
@@ -135,6 +138,7 @@ class A2UIRenderer {
 
         const context = {
             surface,
+            surfaceId,
             components: surface.components,
             dataModel: surface.dataModel,
             renderer: this,
@@ -198,7 +202,7 @@ class A2UIRenderer {
     }
 
     getNextChartId() {
-        return `a2ui-chart-${++this.chartCounter}`;
+        return `a2ui-chart-${Date.now()}-${++_globalChartCounter}`;
     }
 }
 
@@ -365,6 +369,91 @@ const A2UI_CHART_COLORS = [
 
 const A2UI_CHART_BG_COLORS = A2UI_CHART_COLORS.map(c => c + '33');
 
+/**
+ * Robust chart initialisation scheduler.
+ * ─────────────────────────────────────
+ * The canvas element is created inside a detached DOM fragment.  It only
+ * enters the *live document* when the caller appends the returned wrapper
+ * to the chat container.
+ *
+ * KEY FIX: Uses `canvasEl.isConnected` and the direct canvas element
+ * reference instead of `document.getElementById()`.  This eliminates
+ * the duplicate-ID race condition that caused intermittent blank charts
+ * when multiple renderers each produced "a2ui-chart-1".
+ *
+ * Strategy (three tiers, whichever fires first wins):
+ *  1. Immediate check — in case the wrapper was already appended
+ *     synchronously before this function runs.
+ *  2. MutationObserver — watches `document.body` for child-list /
+ *     subtree additions.  Fires the instant the canvas appears in the
+ *     DOM, with zero polling overhead.
+ *  3. setInterval fallback (50 ms, up to 10 s) — safety net for edge
+ *     cases where MutationObserver might miss it (e.g. the element was
+ *     added before the observer was connected, between steps 1 and 2).
+ */
+function _scheduleChartInit(canvasEl, chartId, chartJsConfig) {
+    let initialised = false;
+
+    function doInit() {
+        if (initialised) return true;
+        // Use the direct element reference's `isConnected` property
+        // instead of getElementById — immune to duplicate-ID issues.
+        if (!canvasEl.isConnected) return false; // Not in DOM yet
+
+        initialised = true;
+        try {
+            // Pass the actual canvas element directly to Chart.js
+            // instead of looking it up by ID.  This guarantees we
+            // always initialise on the correct canvas.
+            new Chart(canvasEl, chartJsConfig);
+            console.log('[A2UI Chart] ✓ Initialised:', chartId);
+        } catch (err) {
+            console.error('[A2UI Chart] Failed to create chart:', chartId, err);
+        }
+        return true;
+    }
+
+    // ── Tier 1: immediate ──
+    if (doInit()) return;
+
+    // ── Tier 2: MutationObserver ──
+    let observer = null;
+    if (typeof MutationObserver !== 'undefined') {
+        observer = new MutationObserver(() => {
+            if (canvasEl.isConnected) {
+                if (doInit()) {
+                    observer.disconnect();
+                    observer = null;
+                }
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // ── Tier 3: setInterval fallback ──
+    let elapsed = 0;
+    const INTERVAL = 50;   // ms
+    const MAX_WAIT = 10000; // 10 seconds
+    const fallback = setInterval(() => {
+        elapsed += INTERVAL;
+        if (initialised) {
+            clearInterval(fallback);
+            if (observer) { observer.disconnect(); observer = null; }
+            return;
+        }
+        if (doInit()) {
+            clearInterval(fallback);
+            if (observer) { observer.disconnect(); observer = null; }
+            return;
+        }
+        if (elapsed >= MAX_WAIT) {
+            clearInterval(fallback);
+            if (observer) { observer.disconnect(); observer = null; }
+            console.error('[A2UI Chart] Canvas never appeared in DOM after 10s:', chartId);
+        }
+    }, INTERVAL);
+}
+
 registerA2UIComponent('Chart', (props, context) => {
     const wrapper = document.createElement('div');
     wrapper.className = 'a2ui-chart-surface';
@@ -494,86 +583,85 @@ registerA2UIComponent('Chart', (props, context) => {
         };
     }
 
-    // Create chart after DOM attachment
-    setTimeout(() => {
-        const ctx = document.getElementById(chartId);
-        if (!ctx) return;
+    // ── Chart.js configuration ──
+    const chartJsConfig = {
+        type: jsChartType,
+        data: {
+            labels: labels,
+            datasets: [dataset],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: indexAxis || 'x',
+            animation: {
+                duration: 1200,
+                easing: 'easeOutQuart',
+            },
+            layout: {
+                padding: { top: isPieType ? 10 : 24, right: indexAxis === 'y' ? 40 : 10 },
+            },
+            plugins: {
+                legend: {
+                    display: isPieType,
+                    position: 'bottom',
+                    labels: {
+                        color: '#9494a8',
+                        font: { family: "'Inter', sans-serif", size: 12 },
+                        padding: 16,
+                        usePointStyle: true,
+                        pointStyleWidth: 10,
+                    },
+                },
+                tooltip: {
+                    backgroundColor: '#0f0f1a',
+                    titleColor: '#e8e8f0',
+                    bodyColor: '#9494a8',
+                    borderColor: '#2a2a3a',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8,
+                    titleFont: { family: "'Inter', sans-serif", weight: '600' },
+                    bodyFont: { family: "'Inter', sans-serif" },
+                    displayColors: true,
+                    boxPadding: 4,
+                    callbacks: isPieType ? {
+                        label: (ctx) => {
+                            const val = ctx.parsed;
+                            const pct = ((val / totalValue) * 100).toFixed(1);
+                            return ` ${ctx.label}: ${val} (${pct}%)`;
+                        }
+                    } : {},
+                },
+                datalabels: datalabelsConfig,
+            },
+            scales: isPieType ? {} : {
+                x: {
+                    grid: { color: '#2a2a3a22', drawBorder: false },
+                    ticks: {
+                        color: '#9494a8',
+                        font: { family: "'Inter', sans-serif", size: 11 },
+                        maxRotation: 45,
+                    },
+                    border: { display: false },
+                },
+                y: {
+                    grid: { color: '#2a2a3a44', drawBorder: false },
+                    ticks: {
+                        color: '#9494a8',
+                        font: { family: "'Inter', sans-serif", size: 11 },
+                        precision: 0,
+                    },
+                    border: { display: false },
+                    beginAtZero: true,
+                },
+            },
+        },
+    };
 
-        new Chart(ctx, {
-            type: jsChartType,
-            data: {
-                labels: labels,
-                datasets: [dataset],
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: indexAxis || 'x',
-                animation: {
-                    duration: 1200,
-                    easing: 'easeOutQuart',
-                },
-                layout: {
-                    padding: { top: isPieType ? 10 : 24, right: indexAxis === 'y' ? 40 : 10 },
-                },
-                plugins: {
-                    legend: {
-                        display: isPieType,
-                        position: 'bottom',
-                        labels: {
-                            color: '#9494a8',
-                            font: { family: "'Inter', sans-serif", size: 12 },
-                            padding: 16,
-                            usePointStyle: true,
-                            pointStyleWidth: 10,
-                        },
-                    },
-                    tooltip: {
-                        backgroundColor: '#0f0f1a',
-                        titleColor: '#e8e8f0',
-                        bodyColor: '#9494a8',
-                        borderColor: '#2a2a3a',
-                        borderWidth: 1,
-                        padding: 12,
-                        cornerRadius: 8,
-                        titleFont: { family: "'Inter', sans-serif", weight: '600' },
-                        bodyFont: { family: "'Inter', sans-serif" },
-                        displayColors: true,
-                        boxPadding: 4,
-                        callbacks: isPieType ? {
-                            label: (ctx) => {
-                                const val = ctx.parsed;
-                                const pct = ((val / totalValue) * 100).toFixed(1);
-                                return ` ${ctx.label}: ${val} (${pct}%)`;
-                            }
-                        } : {},
-                    },
-                    datalabels: datalabelsConfig,
-                },
-                scales: isPieType ? {} : {
-                    x: {
-                        grid: { color: '#2a2a3a22', drawBorder: false },
-                        ticks: {
-                            color: '#9494a8',
-                            font: { family: "'Inter', sans-serif", size: 11 },
-                            maxRotation: 45,
-                        },
-                        border: { display: false },
-                    },
-                    y: {
-                        grid: { color: '#2a2a3a44', drawBorder: false },
-                        ticks: {
-                            color: '#9494a8',
-                            font: { family: "'Inter', sans-serif", size: 11 },
-                            precision: 0,
-                        },
-                        border: { display: false },
-                        beginAtZero: true,
-                    },
-                },
-            },
-        });
-    }, 80);
+    // Robust chart init: waits for canvas to be in the live DOM using
+    // MutationObserver + setInterval fallback so it never silently fails.
+    _scheduleChartInit(canvas, chartId, chartJsConfig);
 
     return wrapper;
 });
@@ -638,59 +726,56 @@ registerA2UIComponent('MultiChart', (props, context) => {
         };
     });
 
-    setTimeout(() => {
-        const ctx = document.getElementById(chartId);
-        if (!ctx) return;
-
-        new Chart(ctx, {
-            type: chartType === 'horizontalBar' ? 'bar' : chartType,
-            data: { labels, datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: chartType === 'horizontalBar' ? 'y' : 'x',
-                animation: { duration: 1200, easing: 'easeOutQuart' },
-                layout: { padding: { top: 20 } },
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'bottom',
-                        labels: {
-                            color: '#9494a8',
-                            font: { family: "'Inter', sans-serif", size: 12 },
-                            padding: 16,
-                            usePointStyle: true,
-                        },
+    const multiChartConfig = {
+        type: chartType === 'horizontalBar' ? 'bar' : chartType,
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: chartType === 'horizontalBar' ? 'y' : 'x',
+            animation: { duration: 1200, easing: 'easeOutQuart' },
+            layout: { padding: { top: 20 } },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'bottom',
+                    labels: {
+                        color: '#9494a8',
+                        font: { family: "'Inter', sans-serif", size: 12 },
+                        padding: 16,
+                        usePointStyle: true,
                     },
-                    tooltip: {
-                        backgroundColor: '#0f0f1a',
-                        titleColor: '#e8e8f0',
-                        bodyColor: '#9494a8',
-                        borderColor: '#2a2a3a',
-                        borderWidth: 1,
-                        padding: 12,
-                        cornerRadius: 8,
-                    },
-                    datalabels: { display: false },
                 },
-                scales: {
-                    x: {
-                        stacked,
-                        grid: { color: '#2a2a3a22', drawBorder: false },
-                        ticks: { color: '#9494a8', font: { family: "'Inter', sans-serif", size: 11 } },
-                        border: { display: false },
-                    },
-                    y: {
-                        stacked,
-                        grid: { color: '#2a2a3a44', drawBorder: false },
-                        ticks: { color: '#9494a8', font: { family: "'Inter', sans-serif", size: 11 }, precision: 0 },
-                        border: { display: false },
-                        beginAtZero: true,
-                    },
+                tooltip: {
+                    backgroundColor: '#0f0f1a',
+                    titleColor: '#e8e8f0',
+                    bodyColor: '#9494a8',
+                    borderColor: '#2a2a3a',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8,
+                },
+                datalabels: { display: false },
+            },
+            scales: {
+                x: {
+                    stacked,
+                    grid: { color: '#2a2a3a22', drawBorder: false },
+                    ticks: { color: '#9494a8', font: { family: "'Inter', sans-serif", size: 11 } },
+                    border: { display: false },
+                },
+                y: {
+                    stacked,
+                    grid: { color: '#2a2a3a44', drawBorder: false },
+                    ticks: { color: '#9494a8', font: { family: "'Inter', sans-serif", size: 11 }, precision: 0 },
+                    border: { display: false },
+                    beginAtZero: true,
                 },
             },
-        });
-    }, 80);
+        },
+    };
+
+    _scheduleChartInit(canvas, chartId, multiChartConfig);
 
     return wrapper;
 });
@@ -717,6 +802,602 @@ registerA2UIComponent('StatsCard', (props, context) => {
 
     return el;
 });
+
+
+// ── Form Component ──────────────────────────────────────────
+registerA2UIComponent('Form', (props, context) => {
+    const el = document.createElement('div');
+    el.className = 'a2ui-form-surface';
+
+    const objectName = context.renderer.resolveValue(props.objectName, context) || 'Record';
+    const formTitle = context.renderer.resolveValue(props.title, context) || `Create ${objectName}`;
+    const formId = `a2ui-form-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+    el.dataset.formId = formId;
+    el.dataset.objectName = objectName;
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'a2ui-form-header';
+    header.innerHTML = `
+        <div class="a2ui-form-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/>
+                <line x1="9" y1="15" x2="15" y2="15"/>
+            </svg>
+        </div>
+        <span class="a2ui-form-title">${escapeA2Html(formTitle)}</span>
+        <span class="a2ui-chart-badge">A2UI</span>
+    `;
+    el.appendChild(header);
+
+    // Form body
+    const formBody = document.createElement('div');
+    formBody.className = 'a2ui-form-body';
+    formBody.dataset.formId = formId;
+
+    const children = getChildIds(props);
+    for (const childId of children) {
+        formBody.appendChild(context.renderer.renderChildById(childId, context));
+    }
+
+    el.appendChild(formBody);
+
+    // Status area (for success/error messages)
+    const statusArea = document.createElement('div');
+    statusArea.className = 'a2ui-form-status';
+    statusArea.id = `${formId}-status`;
+    el.appendChild(statusArea);
+
+    return el;
+});
+
+// ── FormField Component ─────────────────────────────────────
+registerA2UIComponent('FormField', (props, context) => {
+    const el = document.createElement('div');
+    el.className = 'a2ui-form-field';
+
+    const label = context.renderer.resolveValue(props.label, context) || '';
+    const fieldName = context.renderer.resolveValue(props.fieldName, context) || '';
+    const fieldType = context.renderer.resolveValue(props.fieldType, context) || 'text';
+    const placeholder = context.renderer.resolveValue(props.placeholder, context) || '';
+    const required = props.required === true;
+    const options = props.options || [];
+
+    // Label
+    const labelEl = document.createElement('label');
+    labelEl.className = 'a2ui-form-label';
+    labelEl.textContent = label;
+    if (required) {
+        const req = document.createElement('span');
+        req.className = 'a2ui-form-required';
+        req.textContent = ' *';
+        labelEl.appendChild(req);
+    }
+    el.appendChild(labelEl);
+
+    // Input
+    let inputEl;
+    if (fieldType === 'textarea') {
+        inputEl = document.createElement('textarea');
+        inputEl.className = 'a2ui-form-input a2ui-form-textarea';
+        inputEl.rows = 3;
+    } else if (fieldType === 'select') {
+        inputEl = document.createElement('select');
+        inputEl.className = 'a2ui-form-input a2ui-form-select';
+        // Add empty option
+        const emptyOpt = document.createElement('option');
+        emptyOpt.value = '';
+        emptyOpt.textContent = placeholder || `Select ${label}...`;
+        inputEl.appendChild(emptyOpt);
+        // Add options
+        const resolvedOptions = Array.isArray(options) ? options : [];
+        for (const opt of resolvedOptions) {
+            const optEl = document.createElement('option');
+            const optVal = context.renderer.resolveValue(opt, context);
+            optEl.value = optVal;
+            optEl.textContent = optVal;
+            inputEl.appendChild(optEl);
+        }
+    } else {
+        inputEl = document.createElement('input');
+        inputEl.className = 'a2ui-form-input';
+        inputEl.type = fieldType;
+    }
+
+    inputEl.name = fieldName;
+    inputEl.placeholder = placeholder;
+    inputEl.dataset.fieldName = fieldName;
+    if (required) inputEl.required = true;
+
+    // Validation feedback on blur
+    inputEl.addEventListener('blur', () => {
+        if (required && !inputEl.value.trim()) {
+            inputEl.classList.add('a2ui-form-error');
+        } else {
+            inputEl.classList.remove('a2ui-form-error');
+        }
+    });
+    inputEl.addEventListener('input', () => {
+        inputEl.classList.remove('a2ui-form-error');
+    });
+
+    el.appendChild(inputEl);
+    return el;
+});
+
+// ── FormButton Component ────────────────────────────────────
+registerA2UIComponent('FormButton', (props, context) => {
+    const el = document.createElement('div');
+    el.className = 'a2ui-form-actions';
+
+    const label = context.renderer.resolveValue(props.label, context) || 'Create Record';
+    const objectName = context.renderer.resolveValue(props.objectName, context) || '';
+
+    const btn = document.createElement('button');
+    btn.className = 'a2ui-form-submit-btn';
+    btn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        <span>${escapeA2Html(label)}</span>
+    `;
+
+    btn.addEventListener('click', async () => {
+        // Find the parent form surface
+        const formSurface = btn.closest('.a2ui-form-surface');
+        if (!formSurface) return;
+
+        const formBody = formSurface.querySelector('.a2ui-form-body');
+        const statusArea = formSurface.querySelector('.a2ui-form-status');
+        const objName = formSurface.dataset.objectName || objectName;
+
+        // Collect field values
+        const inputs = formBody.querySelectorAll('[data-field-name]');
+        const fieldValues = {};
+        let hasError = false;
+
+        inputs.forEach(input => {
+            const name = input.dataset.fieldName;
+            const value = input.value.trim();
+            if (input.required && !value) {
+                input.classList.add('a2ui-form-error');
+                hasError = true;
+            }
+            if (value) {
+                fieldValues[name] = value;
+            }
+        });
+
+        if (hasError) {
+            statusArea.innerHTML = `<div class="a2ui-form-msg a2ui-form-msg-error">Please fill in all required fields.</div>`;
+            return;
+        }
+
+        // Disable button and show loading
+        btn.disabled = true;
+        btn.classList.add('a2ui-form-loading');
+        const originalHTML = btn.innerHTML;
+        btn.innerHTML = `
+            <div class="a2ui-form-spinner"></div>
+            <span>Creating...</span>
+        `;
+        statusArea.innerHTML = '';
+
+        try {
+            const res = await fetch('/api/create-record-form', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ object_name: objName, field_values: fieldValues }),
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                // Show success
+                statusArea.innerHTML = `
+                    <div class="a2ui-form-msg a2ui-form-msg-success">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                            <polyline points="22 4 12 14.01 9 11.01"/>
+                        </svg>
+                        <div>
+                            <strong>${escapeA2Html(objName)} created successfully!</strong>
+                            <div class="a2ui-form-record-id">Record ID: ${escapeA2Html(data.id)}</div>
+                        </div>
+                    </div>
+                `;
+                // Disable all inputs
+                inputs.forEach(input => { input.disabled = true; input.classList.add('a2ui-form-disabled'); });
+                btn.innerHTML = `
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span>Created ✓</span>
+                `;
+                btn.classList.remove('a2ui-form-loading');
+                btn.classList.add('a2ui-form-success');
+            } else {
+                statusArea.innerHTML = `<div class="a2ui-form-msg a2ui-form-msg-error">${escapeA2Html(data.error || 'Failed to create record.')}</div>`;
+                btn.innerHTML = originalHTML;
+                btn.disabled = false;
+                btn.classList.remove('a2ui-form-loading');
+            }
+        } catch (err) {
+            statusArea.innerHTML = `<div class="a2ui-form-msg a2ui-form-msg-error">Network error. Please try again.</div>`;
+            btn.innerHTML = originalHTML;
+            btn.disabled = false;
+            btn.classList.remove('a2ui-form-loading');
+        }
+    });
+
+    el.appendChild(btn);
+    return el;
+});
+
+
+// ── FORM COMPONENTS ─────────────────────────────────────────
+// Interactive form components for creating/editing Salesforce records.
+// Form state is managed per-surface so multiple forms can coexist.
+
+const _a2uiFormState = new Map();
+
+function _setFormValue(surfaceId, path, value) {
+    if (!_a2uiFormState.has(surfaceId)) _a2uiFormState.set(surfaceId, {});
+    const state = _a2uiFormState.get(surfaceId);
+    const parts = path.replace(/^\//, '').split('/');
+    let obj = state;
+    for (let i = 0; i < parts.length - 1; i++) {
+        if (!obj[parts[i]] || typeof obj[parts[i]] !== 'object') obj[parts[i]] = {};
+        obj = obj[parts[i]];
+    }
+    obj[parts[parts.length - 1]] = value;
+}
+
+function _getFormState(surfaceId) {
+    return _a2uiFormState.get(surfaceId) || {};
+}
+
+// ── TextField ──
+registerA2UIComponent('TextField', (props, context) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'a2ui-form-field';
+
+    const label = context.renderer.resolveValue(props.label, context) || '';
+    const path = props.path || '';
+    const required = props.required === true;
+    const placeholder = context.renderer.resolveValue(props.placeholder, context) || '';
+    const inputType = props.inputType || 'text';
+    const surfaceId = context.surfaceId || 'default';
+
+    const labelEl = document.createElement('label');
+    labelEl.className = 'a2ui-form-label';
+    labelEl.innerHTML = `${escapeA2Html(label)}${required ? '<span class="a2ui-required">*</span>' : ''}`;
+    wrapper.appendChild(labelEl);
+
+    const input = document.createElement('input');
+    input.type = inputType;
+    input.className = 'a2ui-form-input';
+    input.placeholder = placeholder;
+    input.dataset.path = path;
+    if (required) input.required = true;
+
+    // Pre-populate with initial value if available (for update forms)
+    const initialValues = (context.dataModel && context.dataModel._initialValues) || {};
+    if (initialValues[path] !== undefined && initialValues[path] !== null) {
+        input.value = String(initialValues[path]);
+        _setFormValue(surfaceId, path, input.value);
+    }
+
+    input.addEventListener('input', () => {
+        _setFormValue(surfaceId, path, input.value);
+        input.classList.remove('a2ui-field-error');
+    });
+    input.addEventListener('focus', () => input.classList.add('a2ui-field-focus'));
+    input.addEventListener('blur', () => input.classList.remove('a2ui-field-focus'));
+
+    wrapper.appendChild(input);
+    return wrapper;
+});
+
+// ── DropDown ──
+registerA2UIComponent('DropDown', (props, context) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'a2ui-form-field';
+
+    const label = context.renderer.resolveValue(props.label, context) || '';
+    const path = props.path || '';
+    const options = props.options || [];
+    const required = props.required === true;
+    const surfaceId = context.surfaceId || 'default';
+
+    const labelEl = document.createElement('label');
+    labelEl.className = 'a2ui-form-label';
+    labelEl.innerHTML = `${escapeA2Html(label)}${required ? '<span class="a2ui-required">*</span>' : ''}`;
+    wrapper.appendChild(labelEl);
+
+    const select = document.createElement('select');
+    select.className = 'a2ui-form-select';
+    select.dataset.path = path;
+
+    // Add placeholder option
+    const placeholderOpt = document.createElement('option');
+    placeholderOpt.value = '';
+    placeholderOpt.textContent = `Select ${label}...`;
+    placeholderOpt.disabled = true;
+    placeholderOpt.selected = true;
+    select.appendChild(placeholderOpt);
+
+    // Resolve options — can be literal strings or bound values
+    const resolvedOptions = options.map(o => {
+        if (typeof o === 'string') return o;
+        return context.renderer.resolveValue(o, context) || '';
+    });
+
+    resolvedOptions.forEach(opt => {
+        const optionEl = document.createElement('option');
+        optionEl.value = opt;
+        optionEl.textContent = opt;
+        select.appendChild(optionEl);
+    });
+
+    // Pre-populate with initial value if available (for update forms)
+    const initialValues = (context.dataModel && context.dataModel._initialValues) || {};
+    if (initialValues[path] !== undefined && initialValues[path] !== null) {
+        select.value = String(initialValues[path]);
+        _setFormValue(surfaceId, path, select.value);
+    }
+
+    select.addEventListener('change', () => {
+        _setFormValue(surfaceId, path, select.value);
+        select.classList.remove('a2ui-field-error');
+    });
+
+    wrapper.appendChild(select);
+    return wrapper;
+});
+
+// ── DateTimeInput ──
+registerA2UIComponent('DateTimeInput', (props, context) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'a2ui-form-field';
+
+    const label = context.renderer.resolveValue(props.label, context) || '';
+    const path = props.path || '';
+    const required = props.required === true;
+    const surfaceId = context.surfaceId || 'default';
+
+    const labelEl = document.createElement('label');
+    labelEl.className = 'a2ui-form-label';
+    labelEl.innerHTML = `${escapeA2Html(label)}${required ? '<span class="a2ui-required">*</span>' : ''}`;
+    wrapper.appendChild(labelEl);
+
+    const input = document.createElement('input');
+    input.type = 'date';
+    input.className = 'a2ui-form-input a2ui-form-date';
+    input.dataset.path = path;
+    if (required) input.required = true;
+
+    // Pre-populate with initial value if available (for update forms)
+    const initialValues = (context.dataModel && context.dataModel._initialValues) || {};
+    if (initialValues[path] !== undefined && initialValues[path] !== null) {
+        input.value = String(initialValues[path]);
+        _setFormValue(surfaceId, path, input.value);
+    }
+
+    input.addEventListener('change', () => {
+        _setFormValue(surfaceId, path, input.value);
+        input.classList.remove('a2ui-field-error');
+    });
+
+    wrapper.appendChild(input);
+    return wrapper;
+});
+
+// ── RadioGroup ──
+registerA2UIComponent('RadioGroup', (props, context) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'a2ui-form-field';
+
+    const label = context.renderer.resolveValue(props.label, context) || '';
+    const path = props.path || '';
+    const options = props.options || [];
+    const surfaceId = context.surfaceId || 'default';
+    const groupName = `radio-${surfaceId}-${path}`.replace(/[^a-zA-Z0-9]/g, '-');
+
+    const labelEl = document.createElement('label');
+    labelEl.className = 'a2ui-form-label';
+    labelEl.textContent = label;
+    wrapper.appendChild(labelEl);
+
+    const radioGroup = document.createElement('div');
+    radioGroup.className = 'a2ui-radio-group';
+
+    const resolvedOptions = options.map(o => {
+        if (typeof o === 'string') return o;
+        return context.renderer.resolveValue(o, context) || '';
+    });
+
+    // Pre-populate with initial value if available (for update forms)
+    const initialValues = (context.dataModel && context.dataModel._initialValues) || {};
+    const initialVal = initialValues[path];
+
+    resolvedOptions.forEach((opt, i) => {
+        const radioWrapper = document.createElement('label');
+        radioWrapper.className = 'a2ui-radio-option';
+
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = groupName;
+        radio.value = opt;
+        radio.className = 'a2ui-radio-input';
+
+        // Check if this is the initial value
+        if (initialVal !== undefined && String(initialVal) === opt) {
+            radio.checked = true;
+            radioWrapper.classList.add('selected');
+            _setFormValue(surfaceId, path, opt);
+        }
+
+        radio.addEventListener('change', () => {
+            _setFormValue(surfaceId, path, opt);
+            radioGroup.querySelectorAll('.a2ui-radio-option').forEach(r => r.classList.remove('selected'));
+            radioWrapper.classList.add('selected');
+        });
+
+        const span = document.createElement('span');
+        span.className = 'a2ui-radio-label';
+        span.textContent = opt;
+
+        radioWrapper.appendChild(radio);
+        radioWrapper.appendChild(span);
+        radioGroup.appendChild(radioWrapper);
+    });
+
+    wrapper.appendChild(radioGroup);
+    return wrapper;
+});
+
+// ── Button (with form submission) ──
+registerA2UIComponent('Button', (props, context) => {
+    const btn = document.createElement('button');
+    btn.className = 'a2ui-form-button';
+
+    const label = context.renderer.resolveValue(props.label, context) || 'Submit';
+    const surfaceId = context.surfaceId || 'default';
+    const action = props.action || {};
+    const actionName = action.name || '';
+
+    btn.innerHTML = `
+        <span class="a2ui-btn-text">${escapeA2Html(label)}</span>
+        <span class="a2ui-btn-loader" style="display:none;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+            </svg>
+        </span>
+    `;
+
+    btn.addEventListener('click', async () => {
+        // Get form config from dataModel
+        const formConfig = context.dataModel._formConfig || {};
+        const objectName = formConfig.objectName || '';
+        const fieldMapping = formConfig.fieldMapping || {};
+        const requiredPaths = formConfig.requiredFields || [];
+        const formMode = formConfig.mode || 'create';
+        const recordId = formConfig.recordId || '';
+
+        // Get form state
+        const formState = _getFormState(surfaceId);
+
+        // Validate required fields
+        let hasErrors = false;
+        const surfaceEl = btn.closest('.a2ui-surface') || btn.closest('.a2ui-surface-container');
+
+        requiredPaths.forEach(reqPath => {
+            const parts = reqPath.replace(/^\//, '').split('/');
+            let val = formState;
+            for (const p of parts) { val = val ? val[p] : undefined; }
+            if (!val || !String(val).trim()) {
+                hasErrors = true;
+                if (surfaceEl) {
+                    const input = surfaceEl.querySelector(`[data-path="${reqPath}"]`);
+                    if (input) input.classList.add('a2ui-field-error');
+                }
+            }
+        });
+
+        if (hasErrors) {
+            _showFormMessage(btn, 'Please fill in all required fields.', 'error');
+            return;
+        }
+
+        // Map form paths to Salesforce field names
+        const sfFieldValues = {};
+        for (const [path, sfField] of Object.entries(fieldMapping)) {
+            const parts = path.replace(/^\//, '').split('/');
+            let val = formState;
+            for (const p of parts) { val = val ? val[p] : undefined; }
+            if (val !== undefined && val !== null && String(val).trim()) {
+                sfFieldValues[sfField] = val;
+            }
+        }
+
+        // Show loading state
+        btn.disabled = true;
+        btn.classList.add('a2ui-btn-loading');
+        btn.querySelector('.a2ui-btn-text').style.display = 'none';
+        btn.querySelector('.a2ui-btn-loader').style.display = 'inline-flex';
+
+        // Build request body — include record_id for update mode
+        const requestBody = {
+            object_name: objectName,
+            field_values: sfFieldValues,
+            action: actionName,
+        };
+        if (formMode === 'update' && recordId) {
+            requestBody.record_id = recordId;
+        }
+
+        try {
+            const res = await fetch('/api/form-submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                btn.classList.remove('a2ui-btn-loading');
+                btn.classList.add('a2ui-btn-success');
+                btn.querySelector('.a2ui-btn-text').style.display = 'inline';
+                const successLabel = formMode === 'update' ? '✓ Updated!' : '✓ Created!';
+                btn.querySelector('.a2ui-btn-text').textContent = successLabel;
+                btn.querySelector('.a2ui-btn-loader').style.display = 'none';
+                const successMsg = formMode === 'update'
+                    ? `${objectName} updated successfully! (ID: ${data.id || recordId})`
+                    : `${objectName} created successfully! (ID: ${data.id})`;
+                _showFormMessage(btn, successMsg, 'success');
+
+                // Disable all form inputs
+                if (surfaceEl) {
+                    surfaceEl.querySelectorAll('input, select').forEach(el => el.disabled = true);
+                }
+            } else {
+                btn.disabled = false;
+                btn.classList.remove('a2ui-btn-loading');
+                btn.querySelector('.a2ui-btn-text').style.display = 'inline';
+                btn.querySelector('.a2ui-btn-text').textContent = label;
+                btn.querySelector('.a2ui-btn-loader').style.display = 'none';
+                _showFormMessage(btn, data.error || 'Operation failed.', 'error');
+            }
+        } catch (err) {
+            btn.disabled = false;
+            btn.classList.remove('a2ui-btn-loading');
+            btn.querySelector('.a2ui-btn-text').style.display = 'inline';
+            btn.querySelector('.a2ui-btn-text').textContent = label;
+            btn.querySelector('.a2ui-btn-loader').style.display = 'none';
+            _showFormMessage(btn, 'Network error. Please try again.', 'error');
+        }
+    });
+
+    return btn;
+});
+
+function _showFormMessage(btnEl, message, type) {
+    // Remove existing message
+    const existing = btnEl.parentElement.querySelector('.a2ui-form-message');
+    if (existing) existing.remove();
+
+    const msgEl = document.createElement('div');
+    msgEl.className = `a2ui-form-message a2ui-form-message-${type}`;
+    msgEl.textContent = message;
+    btnEl.parentElement.insertBefore(msgEl, btnEl.nextSibling);
+
+    // Auto-remove error messages after 5s
+    if (type === 'error') {
+        setTimeout(() => msgEl.remove(), 5000);
+    }
+}
 
 
 // ── Helpers ─────────────────────────────────────────────────

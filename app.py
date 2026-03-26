@@ -10,6 +10,7 @@ import sys
 import glob
 import json
 import uuid
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -28,6 +29,41 @@ SF_SECURITY_TOKEN = os.getenv("SF_SECURITY_TOKEN", "")
 
 app = Flask(__name__, static_folder="frontend", static_url_path="")
 CORS(app)
+
+# ── Permission engine (lazy import after sf scripts are on path) ─
+_permission_engine = None
+
+def _get_permission_engine():
+    global _permission_engine
+    if _permission_engine is None:
+        scripts_dir = os.path.join(SKILL_DIR, "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import sf_permission_engine as _perm
+        _permission_engine = _perm
+    return _permission_engine
+
+# ── Cached viewer context (refreshed per-session or on demand) ──
+_viewer_context_cache = {}
+_viewer_context_ttl = 300  # seconds
+_viewer_context_fetched_at = 0
+
+def get_cached_viewer_context():
+    """Return cached viewer context, refreshing if stale."""
+    global _viewer_context_cache, _viewer_context_fetched_at
+    import time
+    now = time.time()
+    if not _viewer_context_cache or (now - _viewer_context_fetched_at) > _viewer_context_ttl:
+        if sf.connected:
+            try:
+                engine = _get_permission_engine()
+                _viewer_context_cache = engine.get_viewer_context(sf)
+                _viewer_context_fetched_at = now
+                print(f"  [PERM] Viewer context refreshed: persona={_viewer_context_cache.get('persona')}, scope={_viewer_context_cache.get('scope')}")
+            except Exception as e:
+                print(f"  [PERM] Failed to fetch viewer context: {e}")
+                _viewer_context_cache = {"persona": "sales_rep", "scope": "self", "error": str(e)}
+    return _viewer_context_cache
 
 
 # ── Load Skill Knowledge ─────────────────────────────────────
@@ -96,8 +132,10 @@ def build_system_prompt(knowledge, skill_registry=None):
 
 RESPONSE STYLE (CRITICAL — FOLLOW STRICTLY):
 - Be CONCISE and DIRECT. Short sentences, no filler.
-- NEVER mention internal tool names (run_soql_query, update_record, create_record, describe_object, analyze_field_data, etc.) to the user. The user doesn't care about your tools — just DO the action and show results.
+- NEVER mention internal tool names (run_soql_query, update_record, create_record, describe_object, analyze_field_data, generate_chart, get_analytics_dashboard, etc.) to the user. The user doesn't care about your tools — just DO the action and show results.
+- NEVER echo or quote raw tool responses (JSON, success messages, internal confirmations) to the user. When a tool returns a success/status message, DO NOT include it in your reply. Instead, describe the outcome naturally.
 - Instead of "use update_record with the record ID", say "I can update that for you — just tell me the lead name or ID and what to change."
+- Instead of showing '{{"success": true, "message": "Chart generated..."}}', just describe the data insights — the chart is automatically displayed.
 - Instead of "use delete_record", say "I can delete that — which lead do you want removed?"
 - Use bullet points and tables — avoid long paragraphs.
 - For data queries: show the data table and a 1-2 sentence summary.
@@ -118,6 +156,16 @@ DATA-FIRST RULE (CRITICAL — NEVER SKIP THIS):
 - For invest/prioritize questions: show leads sorted by Rating (Hot > Warm > Cold), include Name, Company, Status, Rating, Phone, Email. Then add 1-line reasoning why those top leads are worth investing in.
 - If combining data + text analysis: first show the data table, then add brief insights.
 
+PROACTIVE ACTION RULE (CRITICAL — STOP ASKING, START DOING):
+- When the conversation already contains relevant data (e.g. you just showed a list of inactive accounts, at-risk deals, or leads), USE that data directly for follow-up actions. Do NOT ask the user for IDs or details you already have.
+- Example: User says "Create follow-up tasks for inactive accounts" after you showed 15 inactive accounts → Immediately create Task records for ALL those accounts using the Account IDs from the previous query. Use sensible defaults (Subject = "Follow-up: Inactive Account", Status = "Not Started").
+- Example: User says "Call him 28-April" referring to the accounts → Create Task records with Subject = "Call", ActivityDate = "2026-04-28", WhatId = AccountId for each account.
+- When the user gives a date like "28-April" or "next Monday", convert it to YYYY-MM-DD format and proceed.
+- When creating bulk tasks/records from a list: just DO it. Create all the records in sequence. Show a confirmation table when done.
+- NEVER ask for a Lead ID, Contact ID, or Account ID when you already have them from a previous query in this conversation.
+- NEVER ask "what subject/due date?" — use the user's words directly. If they said "Call him", Subject = "Call". If they said "Follow up next week", Subject = "Follow Up", ActivityDate = next Monday.
+- For Tasks linked to Accounts, use WhatId (not WhoId). WhoId is for Leads/Contacts.
+
 YOUR CAPABILITIES:
 1. Query and search live Salesforce data
 2. Create, update, and delete records
@@ -128,6 +176,56 @@ YOUR CAPABILITIES:
 7. Analyze text fields using AI (sentiment, themes, patterns)
 8. Check calendar availability and book meetings/calls
 9. Answer any Salesforce platform question
+10. Get permission-aware analytics dashboards (security-trimmed, persona-specific)
+11. Render interactive creation forms in the chat (Lead, Account, Contact, Opportunity)
+12. Render interactive UPDATE forms pre-populated with existing record values
+
+FORM RENDERING RULE (CRITICAL — ALWAYS FOLLOW FOR CREATE AND UPDATE REQUESTS):
+- When the user asks to "create a new lead", "add an account", "create a contact", "new opportunity", etc.
+  and does NOT provide all the required field values in their message → ALWAYS call render_create_form.
+  This renders an interactive form directly in the chat where the user can fill in fields and submit.
+- If the user DOES provide all required fields inline (e.g. "create a lead: John Doe at Acme Corp, email john@acme.com")
+  → Use create_record directly with the provided values.
+- When the user asks to "update this lead", "edit this account", "modify the record", etc.
+  → ALWAYS call render_update_form with the object_name and record_id.
+  This fetches the current field values and renders a pre-populated form so the user can see
+  existing values, modify what they need, and submit. The user does NOT need to re-type unchanged fields.
+- If the user provides a specific field change inline (e.g. "change the status to Working")
+  → Use update_record directly, no form needed.
+- NEVER ask the user to type out each field value one by one. Just render the form.
+- After calling render_create_form or render_update_form, keep your response SHORT (under 30 words). The form speaks for itself.
+- Supported objects for forms: Lead, Account, Contact, Opportunity. For other objects, use create_record/update_record.
+
+PERMISSION-AWARE ANALYTICS (CRITICAL — ALWAYS USE FOR THESE INTENTS):
+- When the user asks about pipeline, deals at risk, tasks, team performance, forecast,
+  inactive accounts, SLA risk, or data quality → ALWAYS call get_analytics_dashboard.
+- This tool automatically detects who is logged in, what they can see, and returns
+  only security-trimmed data. NEVER bypass it by running raw SOQL for these intents.
+- Supporting intents: my_pipeline | deals_at_risk | tasks_today | team_performance |
+  forecast | no_activity_accounts | sla_risk_cases | data_quality
+- For the structured payload returned by get_analytics_dashboard:
+  • Start with the summary line (1 sentence).
+  • Show the KPI cards next — use the kpis array.
+  • Reference the chart config so the frontend can render it.
+  • Show the table (top 5-15 actionable records).
+  • List the suggested actions from the actions array.
+  • End with the metadata line showing timeRange, ownerScope, and dataAsOf.
+  • If access_blocked is non-empty, tell the user clearly what they cannot see.
+
+PERSONA-SPECIFIC DEFAULT RESPONSES:
+- sales_rep    → my_pipeline, tasks_today, deals_at_risk focused
+- sales_manager→ team_performance, forecast, no_activity_accounts focused
+- exec         → forecast, team_performance, data_quality focused
+- sales_ops    → data_quality, team_performance, no_activity_accounts focused
+- service_manager → sla_risk_cases, data_quality focused
+
+WHEN TO USE CHART vs TABLE:
+- metric/gauge  → "How am I doing against target?"
+- line chart    → trends over time
+- bar/column    → compare reps, regions, products, stages
+- pie/donut     → simple composition (2-5 categories)
+- table         → record-level action needed
+- horizontalBar → long labels or 8+ categories
 
 CALENDAR & MEETING BOOKING:
 - When user asks to "book a call", "schedule a meeting", or "set up a meeting" → FIRST check_calendar to see availability, THEN suggest available time slots, THEN book_meeting once user confirms or if they specified a time.
@@ -920,6 +1018,42 @@ TOOLS = [
             )
         ),
         types.FunctionDeclaration(
+            name="get_analytics_dashboard",
+            description=(
+                "Get a permission-aware, security-trimmed analytics dashboard for a specific business intent. "
+                "Automatically detects who is logged in, their persona (sales_rep / sales_manager / exec / "
+                "sales_ops / service_manager / service_agent), what Salesforce data they can see (based on "
+                "profiles, permission sets, role hierarchy, OWDs), enforces record-level scope (self/team/global), "
+                "and returns KPIs, chart config, and a drill-down table in a structured payload. "
+                "ALWAYS call this instead of raw SOQL for: pipeline questions, at-risk deals, today's tasks, "
+                "team performance, forecast, inactive accounts, SLA risk cases, data quality."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "intent": types.Schema(
+                        type="STRING",
+                        description=(
+                            "The analytics intent. Allowed values: "
+                            "'my_pipeline' (open opportunities, pipeline value, win rate), "
+                            "'deals_at_risk' (overdue or stalled opportunities), "
+                            "'tasks_today' (tasks due today for the logged-in user), "
+                            "'team_performance' (rep leaderboard, pipeline by rep), "
+                            "'forecast' (closed won vs open pipeline vs target), "
+                            "'no_activity_accounts' (accounts with no activity in 30+ days), "
+                            "'sla_risk_cases' (high-priority open cases at SLA risk), "
+                            "'data_quality' (missing fields, incomplete records, hygiene issues)"
+                        )
+                    ),
+                    "time_range": types.Schema(
+                        type="STRING",
+                        description="Salesforce date literal for the time filter. Default 'THIS_QUARTER'. Examples: THIS_QUARTER, THIS_MONTH, THIS_YEAR, LAST_QUARTER, LAST_N_DAYS:30."
+                    ),
+                },
+                required=["intent"]
+            )
+        ),
+        types.FunctionDeclaration(
             name="get_record_all_fields",
             description="Fetch a single record with ALL its fields (standard and custom). Automatically describes the object to discover every field, then queries them all. Use this when the user provides a record ID and asks about any field value (e.g. 'give me the mobile number for this lead').",
             parameters=types.Schema(
@@ -1010,6 +1144,49 @@ TOOLS = [
                 required=["subject", "start_datetime"]
             )
         ),
+        types.FunctionDeclaration(
+            name="render_create_form",
+            description=(
+                "Render an interactive creation form in the chat UI for a Salesforce object (Lead, Account, Contact, Opportunity, etc.). "
+                "Use this INSTEAD of create_record when the user asks to 'create a new lead', 'add an account', 'create a contact', etc. "
+                "and does NOT provide all the field values upfront. The form lets the user fill in fields and submit directly from the chat. "
+                "If the user already provides ALL required field values in their message, use create_record directly instead."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "object_name": types.Schema(
+                        type="STRING",
+                        description="The Salesforce object API name to create. E.g. 'Lead', 'Account', 'Contact', 'Opportunity'"
+                    ),
+                },
+                required=["object_name"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="render_update_form",
+            description=(
+                "Render an interactive UPDATE form in the chat UI for an existing Salesforce record. "
+                "The form is pre-populated with the record's current field values so the user can see "
+                "what was previously entered and edit any fields. Use this when the user asks to "
+                "'update a lead', 'edit this account', 'modify the record', etc. "
+                "You MUST provide the record_id of the record to update."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "object_name": types.Schema(
+                        type="STRING",
+                        description="The Salesforce object API name. E.g. 'Lead', 'Account', 'Contact', 'Opportunity'"
+                    ),
+                    "record_id": types.Schema(
+                        type="STRING",
+                        description="The Salesforce record ID (e.g. '00Q...' for Lead, '001...' for Account)"
+                    ),
+                },
+                required=["object_name", "record_id"]
+            )
+        ),
     ])
 ]
 
@@ -1071,6 +1248,350 @@ def _build_a2ui_chart_surface(chart_config):
         }
     ]
     return messages
+
+
+def _build_a2ui_kpi_surface(kpis: list, summary: str, meta: dict) -> list:
+    """Build an A2UI surface containing KPI StatsCards + a metadata footer."""
+    global _chart_surface_counter
+    _chart_surface_counter += 1
+    surface_id = f"kpi-surface-{_chart_surface_counter}"
+
+    # Build component list: one StatsCard per KPI
+    components = [
+        {
+            "id": "root",
+            "component": {
+                "Column": {
+                    "gap": 12,
+                    "children": {"explicitList": ["kpi_row"] + (["meta_text"] if meta else [])}
+                }
+            }
+        },
+        {
+            "id": "kpi_row",
+            "component": {
+                "Row": {
+                    "gap": 12,
+                    "children": {"explicitList": [f"kpi_{i}" for i in range(len(kpis))]}
+                }
+            }
+        },
+    ]
+
+    for i, kpi in enumerate(kpis):
+        value = kpi.get("value", 0)
+        unit  = kpi.get("unit", "")
+        color = kpi.get("color", "#6366f1")
+
+        # Format value nicely
+        if unit == "currency":
+            if value >= 1_000_000:
+                display_val = f"{value/1_000_000:.1f}M"
+            elif value >= 1_000:
+                display_val = f"{value/1_000:.1f}K"
+            else:
+                display_val = f"{value:,.0f}" if isinstance(value, (int, float)) else str(value)
+        elif unit == "%":
+            display_val = f"{value}%"
+        else:
+            display_val = str(value)
+
+        components.append({
+            "id": f"kpi_{i}",
+            "component": {
+                "StatsCard": {
+                    "label": {"literalString": kpi.get("label", "")},
+                    "value": {"literalString": display_val},
+                    "color": color,
+                }
+            }
+        })
+
+    if meta:
+        data_as_of = meta.get("dataAsOf", "")
+        note = meta.get("note", "")
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(data_as_of.replace("Z", "+00:00"))
+            data_as_of = dt.strftime("%d %b %Y, %I:%M %p UTC")
+        except Exception:
+            pass
+        meta_text = f"{note} · Refreshed {data_as_of}"
+        components.append({
+            "id": "meta_text",
+            "component": {
+                "Text": {
+                    "text": {"literalString": meta_text},
+                    "usageHint": "caption",
+                }
+            }
+        })
+
+    messages = [
+        {
+            "surfaceId": surface_id,
+            "surfaceUpdate": {"components": components}
+        },
+        {
+            "surfaceId": surface_id,
+            "dataModelUpdate": {"contents": {}}
+        },
+        {
+            "surfaceId": surface_id,
+            "beginRendering": {"root": "root"}
+        }
+    ]
+    return messages
+
+
+# ── Form Schemas per Object (A2UI Component Definitions) ─────
+# Each field maps to an A2UI component: TextField, DropDown, RadioGroup, DateTimeInput
+# 'path' is used for form state binding, 'sfField' maps to Salesforce API name
+_FORM_SCHEMAS = {
+    "Lead": {
+        "title": "New Lead",
+        "pathPrefix": "/lead",
+        "fields": [
+            {"id": "fname",    "component": "TextField",     "label": "First Name",     "path": "/lead/firstName",   "sfField": "FirstName"},
+            {"id": "lname",    "component": "TextField",     "label": "Last Name",      "path": "/lead/lastName",    "sfField": "LastName",      "required": True},
+            {"id": "company",  "component": "TextField",     "label": "Company",        "path": "/lead/company",     "sfField": "Company",       "required": True},
+            {"id": "currency", "component": "DropDown",      "label": "Lead Currency",  "path": "/lead/currency",    "sfField": "CurrencyIsoCode",
+             "options": ["EUR", "USD"]},
+            {"id": "status",   "component": "DropDown",      "label": "Lead Status",    "path": "/lead/status",      "sfField": "Status",        "required": True,
+             "options": ["Open - Not Contacted", "Working - Contacted", "Closed - Converted", "Closed - Not Converted"]},
+        ],
+        "submitLabel": "Create Lead",
+        "submitAction": "createLead",
+    },
+    "Account": {
+        "title": "New Account",
+        "pathPrefix": "/account",
+        "fields": [
+            {"id": "name",     "component": "TextField",     "label": "Account Name",    "path": "/account/name",     "sfField": "Name",            "required": True},
+            {"id": "currency", "component": "DropDown",      "label": "Account Currency", "path": "/account/currency", "sfField": "CurrencyIsoCode", "required": True,
+             "options": ["EUR", "USD", "GBP", "INR", "JPY", "AUD", "CAD", "CHF", "CNY", "SGD"]},
+        ],
+        "submitLabel": "Create Account",
+        "submitAction": "createAccount",
+    },
+    "Contact": {
+        "title": "New Contact",
+        "pathPrefix": "/contact",
+        "fields": [
+            {"id": "fname",    "component": "TextField",     "label": "First Name",     "path": "/contact/firstName","sfField": "FirstName"},
+            {"id": "lname",    "component": "TextField",     "label": "Last Name",      "path": "/contact/lastName", "sfField": "LastName",      "required": True},
+            {"id": "email",    "component": "TextField",     "label": "Email",          "path": "/contact/email",    "sfField": "Email",         "inputType": "email"},
+            {"id": "phone",    "component": "TextField",     "label": "Phone",          "path": "/contact/phone",    "sfField": "Phone",         "inputType": "tel"},
+            {"id": "title",    "component": "TextField",     "label": "Title",          "path": "/contact/title",    "sfField": "Title"},
+            {"id": "dept",     "component": "TextField",     "label": "Department",     "path": "/contact/dept",     "sfField": "Department"},
+        ],
+        "submitLabel": "Create Contact",
+        "submitAction": "createContact",
+    },
+    "Opportunity": {
+        "title": "New Opportunity",
+        "pathPrefix": "/opp",
+        "fields": [
+            {"id": "name",     "component": "TextField",     "label": "Opportunity Name","path": "/opp/name",        "sfField": "Name",          "required": True},
+            {"id": "closedate","component": "DateTimeInput",  "label": "Close Date",     "path": "/opp/closeDate",   "sfField": "CloseDate",     "required": True},
+            {"id": "stage",    "component": "DropDown",      "label": "Stage",          "path": "/opp/stage",        "sfField": "StageName",     "required": True,
+             "options": ["Prospecting", "Qualification", "Needs Analysis", "Value Proposition", "Id. Decision Makers", "Perception Analysis", "Proposal/Price Quote", "Negotiation/Review", "Closed Won", "Closed Lost"]},
+            {"id": "amount",   "component": "TextField",     "label": "Amount",         "path": "/opp/amount",       "sfField": "Amount",        "inputType": "number"},
+            {"id": "type",     "component": "DropDown",      "label": "Type",           "path": "/opp/type",         "sfField": "Type",
+             "options": ["Existing Customer - Upgrade", "Existing Customer - Replacement", "Existing Customer - Downgrade", "New Customer"]},
+        ],
+        "submitLabel": "Create Opportunity",
+        "submitAction": "createOpportunity",
+    },
+}
+
+
+def _build_a2ui_form_surface(object_name: str, mode: str = "create", record_id: str = None, prefill: dict = None) -> list:
+    """Build an A2UI surface with TextField, DropDown, RadioGroup, DateTimeInput, and
+    Button components following the A2UI v0.8 spec.
+    
+    Args:
+        object_name: Salesforce object API name (Lead, Account, etc.)
+        mode: 'create' or 'update'
+        record_id: Salesforce record ID (required for update)
+        prefill: Dict of {SF_field_api_name: value} to pre-populate fields
+    """
+    global _chart_surface_counter
+    _chart_surface_counter += 1
+    surface_id = f"form-surface-{_chart_surface_counter}"
+
+    schema = _FORM_SCHEMAS.get(object_name)
+    if not schema:
+        # Fallback: minimal form
+        schema = {
+            "title": f"New {object_name}",
+            "pathPrefix": f"/{object_name.lower()}",
+            "fields": [
+                {"id": "name", "component": "TextField", "label": "Name",
+                 "path": f"/{object_name.lower()}/name", "sfField": "Name", "required": True},
+            ],
+            "submitLabel": f"Create {object_name}",
+            "submitAction": f"create{object_name}",
+        }
+
+    # Override title and button label for update mode
+    if mode == "update":
+        title = f"Update {object_name}"
+        submit_label = f"Update {object_name}"
+        submit_action = f"update{object_name}"
+    else:
+        title = schema["title"]
+        submit_label = schema["submitLabel"]
+        submit_action = schema["submitAction"]
+
+    fields = schema["fields"]
+    field_ids = [f["id"] for f in fields]
+    all_child_ids = ["title"] + field_ids + ["submit"]
+
+    # Build field mapping  { path -> SF API name }
+    field_mapping = {}
+    required_paths = []
+    for f in fields:
+        field_mapping[f["path"]] = f["sfField"]
+        if f.get("required"):
+            required_paths.append(f["path"])
+
+    # ── Build components list ──
+    components = [
+        # Root Card (gives the form a premium card treatment)
+        {
+            "id": "root",
+            "component": {
+                "Card": {
+                    "elevation": 2,
+                    "children": {"explicitList": ["inner_col"]}
+                }
+            }
+        },
+        # Inner Column (holds title + fields + button)
+        {
+            "id": "inner_col",
+            "component": {
+                "Column": {
+                    "gap": 16,
+                    "children": {"explicitList": all_child_ids}
+                }
+            }
+        },
+        # Title Text
+        {
+            "id": "title",
+            "component": {
+                "Text": {
+                    "text": {"literalString": title},
+                    "usageHint": "h1",
+                }
+            }
+        },
+    ]
+
+    # ── Field components ──
+    for f in fields:
+        comp_type = f["component"]
+        comp_props = {}
+
+        if comp_type == "TextField":
+            comp_props = {
+                "label": {"literalString": f["label"]},
+                "path": f["path"],
+                "placeholder": {"literalString": f.get("placeholder", "")},
+            }
+            if f.get("inputType"):
+                comp_props["inputType"] = f["inputType"]
+            if f.get("required"):
+                comp_props["required"] = True
+
+        elif comp_type == "DropDown":
+            comp_props = {
+                "label": {"literalString": f["label"]},
+                "path": f["path"],
+                "options": [{"literalString": opt} for opt in f.get("options", [])],
+            }
+            if f.get("required"):
+                comp_props["required"] = True
+
+        elif comp_type == "RadioGroup":
+            comp_props = {
+                "label": {"literalString": f["label"]},
+                "path": f["path"],
+                "options": [{"literalString": opt} for opt in f.get("options", [])],
+            }
+
+        elif comp_type == "DateTimeInput":
+            comp_props = {
+                "label": {"literalString": f["label"]},
+                "path": f["path"],
+            }
+            if f.get("required"):
+                comp_props["required"] = True
+
+        components.append({
+            "id": f["id"],
+            "component": {comp_type: comp_props}
+        })
+
+    # ── Submit Button ──
+    components.append({
+        "id": "submit",
+        "component": {
+            "Button": {
+                "label": {"literalString": submit_label},
+                "action": {
+                    "name": submit_action,
+                    "dataBindings": [schema["pathPrefix"]],
+                }
+            }
+        }
+    })
+
+    # ── Build _initialValues from prefill ──
+    initial_values = {}
+    if prefill:
+        # Reverse map: SF field name -> path
+        sf_to_path = {v: k for k, v in field_mapping.items()}
+        for sf_field, value in prefill.items():
+            if sf_field in sf_to_path and value is not None:
+                initial_values[sf_to_path[sf_field]] = value
+
+    # ── Build the 3-part A2UI message sequence ──
+    data_model_contents = {
+        "_formConfig": {
+            "objectName": object_name,
+            "fieldMapping": field_mapping,
+            "requiredFields": required_paths,
+            "mode": mode,
+        }
+    }
+    if record_id:
+        data_model_contents["_formConfig"]["recordId"] = record_id
+    if initial_values:
+        data_model_contents["_initialValues"] = initial_values
+
+    # ── Build the 3-part A2UI message sequence ──
+    messages = [
+        {
+            "surfaceId": surface_id,
+            "surfaceUpdate": {"components": components}
+        },
+        {
+            "surfaceId": surface_id,
+            "dataModelUpdate": {
+                "contents": data_model_contents
+            }
+        },
+        {
+            "surfaceId": surface_id,
+            "beginRendering": {"root": "root"}
+        }
+    ]
+    return messages
+
+
 
 
 def _get_record_email(sf, object_name, record_id):
@@ -1240,12 +1761,53 @@ def handle_function_call(function_call, sf):
         }
         _pending_charts.append(chart_config)
 
-        # Also build A2UI surface messages
-        a2ui_messages = _build_a2ui_chart_surface(chart_config)
-        _pending_a2ui_surfaces.append(a2ui_messages)
+        # NOTE: Charts are rendered via the 'charts' pipeline in the frontend.
+        # Do NOT also add to _pending_a2ui_surfaces — that causes duplicate
+        # empty chart boxes (the second canvas never initialises properly).
 
-        print(f"  [A2UI] Generated {chart_config['chart_type']} chart surface: {chart_config['title']}")
-        return {"success": True, "message": f"Chart '{chart_config['title']}' generated as A2UI surface. It will be displayed to the user."}
+        print(f"  [CHART] Generated {chart_config['chart_type']} chart: {chart_config['title']}")
+        return {"status": "rendered", "_instruction": "The chart is automatically displayed to the user in the UI. Do NOT mention this tool response or show any JSON to the user. Instead, briefly describe the data insights or trends visible in the chart."}
+
+    elif name == "get_analytics_dashboard":
+        intent = args.get("intent", "my_pipeline")
+        time_range = args.get("time_range", "THIS_QUARTER")
+        print(f"  [ANALYTICS] Building dashboard: intent={intent}, time_range={time_range}")
+
+        try:
+            engine = _get_permission_engine()
+            viewer_ctx = get_cached_viewer_context()
+            payload = engine.build_analytics_payload(
+                viewer_ctx=viewer_ctx,
+                intent=intent,
+                sf_conn=sf,
+                time_range=time_range,
+            )
+
+            # Auto-render the chart from the payload
+            if payload.get("chart") and payload["chart"].get("labels"):
+                chart_cfg = payload["chart"]
+                chart_config = {
+                    "chart_type": chart_cfg.get("type", "bar"),
+                    "title":      chart_cfg.get("title", intent),
+                    "labels":     [str(l) for l in chart_cfg.get("labels", [])],
+                    "data":       [float(d) for d in chart_cfg.get("data", [])],
+                    "dataset_label": chart_cfg.get("dataset_label", "Count"),
+                }
+                _pending_charts.append(chart_config)
+                # Chart is rendered via 'charts' pipeline — do NOT duplicate in a2ui_surfaces
+
+            # Auto-render KPI cards as A2UI surface
+            kpis = payload.get("kpis", [])
+            if kpis:
+                kpi_surface_messages = _build_a2ui_kpi_surface(kpis, payload.get("summary", ""), payload.get("meta", {}))
+                _pending_a2ui_surfaces.append(kpi_surface_messages)
+
+            print(f"  [ANALYTICS] Dashboard built: {len(kpis)} KPIs, chart={bool(payload.get('chart'))}, {len((payload.get('table') or {}).get('rows', []))} rows")
+            return payload
+
+        except Exception as e:
+            print(f"  [ANALYTICS] Error: {e}")
+            return {"error": str(e)}
     elif name == "get_record_all_fields":
         obj_name = args.get("object_name", "")
         record_id = args.get("record_id", "")
@@ -1330,6 +1892,68 @@ def handle_function_call(function_call, sf):
         else:
             print(f"  [Booked: {result['event_id']}]")
         return result
+    elif name == "render_create_form":
+        obj_name = args.get("object_name", "Lead")
+        print(f"  [FORM] Rendering create form for {obj_name}")
+        form_surface = _build_a2ui_form_surface(obj_name)
+        _pending_a2ui_surfaces.append(form_surface)
+        return {
+            "status": "rendered",
+            "_instruction": (
+                f"An interactive {obj_name} creation form has been rendered in the chat UI. "
+                f"Do NOT describe each field or repeat the form contents. Just tell the user briefly: "
+                f"'Here's a form to create a new {obj_name}. Fill in the details and click the button to create it in Salesforce.' "
+                f"Keep your response under 30 words."
+            )
+        }
+    elif name == "render_update_form":
+        obj_name = args.get("object_name", "Lead")
+        record_id = args.get("record_id", "")
+        print(f"  [FORM] Rendering update form for {obj_name} {record_id}")
+
+        if not record_id:
+            return {"error": "record_id is required for render_update_form."}
+
+        # Fetch current field values to pre-populate the form
+        prefill = {}
+        try:
+            schema = _FORM_SCHEMAS.get(obj_name)
+            if schema:
+                # Only fetch fields that are in the form schema
+                sf_fields = [f["sfField"] for f in schema["fields"]]
+                field_csv = ", ".join(sf_fields)
+                soql = f"SELECT {field_csv} FROM {obj_name} WHERE Id = '{record_id}' LIMIT 1"
+                print(f"  [FORM] Fetching current values: {soql}")
+                result = sf.run_soql(soql)
+                if "error" not in result and result.get("records"):
+                    record = result["records"][0]
+                    prefill = {k: v for k, v in record.items() if v is not None}
+                    print(f"  [FORM] Pre-fill data: {json.dumps(prefill)}")
+                else:
+                    print(f"  [FORM] Could not fetch record, form will render empty")
+            else:
+                # No schema — try to get all fields
+                all_fields_result = sf.get_all_fields_for_record(obj_name, record_id)
+                if "error" not in all_fields_result and all_fields_result.get("record"):
+                    prefill = {k: v for k, v in all_fields_result["record"].items() if v is not None}
+        except Exception as e:
+            print(f"  [FORM] Error fetching prefill data: {e}")
+
+        form_surface = _build_a2ui_form_surface(
+            obj_name, mode="update", record_id=record_id, prefill=prefill
+        )
+        _pending_a2ui_surfaces.append(form_surface)
+        return {
+            "status": "rendered",
+            "_instruction": (
+                f"An interactive {obj_name} update form has been rendered in the chat UI, "
+                f"pre-populated with the record's current values. "
+                f"Do NOT describe each field or repeat the form contents. Just tell the user briefly: "
+                f"'Here's the update form for this {obj_name} — current values are pre-filled. "
+                f"Edit what you need and click Update to save.' "
+                f"Keep your response under 30 words."
+            )
+        }
     return {"error": f"Unknown function: {name}"}
 
 
@@ -1353,6 +1977,15 @@ sf = SalesforceConnection()
 try:
     instance_url = sf.connect()
     print(f"  Connected to Salesforce: {instance_url}")
+    # Warm up viewer context cache immediately after connection
+    try:
+        _engine = _get_permission_engine()
+        _viewer_context_cache = _engine.get_viewer_context(sf)
+        import time as _time
+        _viewer_context_fetched_at = _time.time()
+        print(f"  [PERM] Viewer: {_viewer_context_cache.get('full_name', '?')} | persona={_viewer_context_cache.get('persona')} | scope={_viewer_context_cache.get('scope')}")
+    except Exception as _ve:
+        print(f"  [PERM] Viewer context warmup skipped: {_ve}")
 except Exception as e:
     print(f"  Salesforce connection failed: {e}")
     instance_url = "Not connected"
@@ -1495,6 +2128,106 @@ def otp_resend():
 
 
 
+@app.route("/api/viewer-context")
+def viewer_context_route():
+    """Return the current viewer's permission context (persona, scope, allowed objects)."""
+    ctx = get_cached_viewer_context()
+    # Strip internal-only fields before sending to frontend
+    safe_ctx = {
+        "persona":          ctx.get("persona", "sales_rep"),
+        "full_name":        ctx.get("full_name", ""),
+        "email":            ctx.get("email", ""),
+        "profile_name":     ctx.get("profile_name", ""),
+        "role_name":        ctx.get("role_name", ""),
+        "scope":            ctx.get("scope", "self"),
+        "currency":         ctx.get("currency", "USD"),
+        "timezone":         ctx.get("timezone", "UTC"),
+        "allowed_objects":  ctx.get("allowed_objects", []),
+        "restricted_objects": ctx.get("restricted_objects", []),
+        "can_view_all_data":(ctx.get("can_view_all_data", False)),
+        "error":            ctx.get("error"),
+    }
+    return jsonify(safe_ctx)
+
+
+@app.route("/api/create-record-form", methods=["POST"])
+def create_record_form():
+    """Create a Salesforce record from an A2UI form submission."""
+    data = request.json
+    obj_name = data.get("object_name", "")
+    field_values = data.get("field_values", {})
+
+    if not obj_name:
+        return jsonify({"error": "Missing object_name."}), 400
+    if not field_values:
+        return jsonify({"error": "No field values provided."}), 400
+
+    try:
+        result = sf.create_record(obj_name, field_values)
+        if "error" in result:
+            return jsonify({"error": result["error"]})
+
+        # Add to conversation history so AI knows what happened
+        conversation_history.append(
+            types.Content(role="user", parts=[types.Part(text=
+                f"[SYSTEM: User submitted a form and created a new {obj_name} record with ID: {result['id']}. "
+                f"Fields: {json.dumps(field_values)}]"
+            )])
+        )
+
+        return jsonify({
+            "success": True,
+            "id": result["id"],
+            "object": obj_name,
+            "message": f"{obj_name} created successfully."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/form-submit", methods=["POST"])
+def form_submit():
+    """Generic form submit endpoint for create and update operations."""
+    data = request.json
+    obj_name = data.get("object_name", "")
+    field_values = data.get("field_values", {})
+    action = data.get("action", "create")
+    record_id = data.get("record_id", "")
+
+    if not obj_name or not field_values:
+        return jsonify({"error": "Missing object_name or field_values."}), 400
+
+    try:
+        if action == "" or action.startswith("create"):
+            result = sf.create_record(obj_name, field_values)
+            if "error" in result:
+                return jsonify({"error": result["error"]})
+            conversation_history.append(
+                types.Content(role="user", parts=[types.Part(text=
+                    f"[SYSTEM: User created a new {obj_name} record via form. ID: {result['id']}. "
+                    f"Fields: {json.dumps(field_values)}]"
+                )])
+            )
+            return jsonify({"success": True, "id": result["id"], "object": obj_name})
+        elif action.startswith("update"):
+            if not record_id:
+                return jsonify({"error": "Missing record_id for update."}), 400
+            result = sf.update_record(obj_name, record_id, field_values)
+            if "error" in result:
+                return jsonify({"error": result["error"]})
+            conversation_history.append(
+                types.Content(role="user", parts=[types.Part(text=
+                    f"[SYSTEM: User updated {obj_name} record ({record_id}) via form. "
+                    f"Updated fields: {json.dumps(field_values)}]"
+                )])
+            )
+            return jsonify({"success": True, "id": record_id, "object": obj_name})
+        else:
+            return jsonify({"error": f"Unsupported action: {action}"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/status")
 def status():
     return jsonify({
@@ -1506,7 +2239,7 @@ def status():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    global conversation_history, _pending_charts
+    global conversation_history, _pending_charts, _pending_a2ui_surfaces
 
     data = request.json
     user_message = data.get("message", "").strip()
