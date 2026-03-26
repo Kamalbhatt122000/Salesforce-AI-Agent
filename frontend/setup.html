@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect to Salesforce — Setup</title>
+    <meta name="description" content="Set up your Salesforce AI Agent by connecting your org with OAuth 2.0.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="setup.css">
+</head>
+
+<body>
+    <!-- Animated Background -->
+    <div class="bg-effects">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+        <div class="grid-overlay"></div>
+    </div>
+
+    <div class="setup-container">
+        <!-- Header -->
+        <header class="setup-header">
+            <div class="logo-mark">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="url(#logoGrad)" stroke-width="2">
+                    <defs>
+                        <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#6366f1" />
+                            <stop offset="100%" style="stop-color:#06b6d4" />
+                        </linearGradient>
+                    </defs>
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                </svg>
+            </div>
+            <h1>Salesforce AI Agent</h1>
+            <p class="subtitle">Connect your Salesforce org in minutes</p>
+        </header>
+
+        <!-- Progress Steps -->
+        <div class="progress-bar">
+            <div class="progress-step active" id="progressStep1">
+                <div class="step-number">1</div>
+                <span>Create Connected App</span>
+            </div>
+            <div class="progress-line" id="progressLine1"></div>
+            <div class="progress-step" id="progressStep2">
+                <div class="step-number">2</div>
+                <span>Enter Credentials</span>
+            </div>
+            <div class="progress-line" id="progressLine2"></div>
+            <div class="progress-step" id="progressStep3">
+                <div class="step-number">3</div>
+                <span>Connect</span>
+            </div>
+        </div>
+
+        <!-- Step 1: Guide -->
+        <section class="step-panel active" id="stepPanel1">
+            <div class="panel-header">
+                <div class="panel-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="16" y1="13" x2="8" y2="13" />
+                        <line x1="16" y1="17" x2="8" y2="17" />
+                        <polyline points="10 9 9 9 8 9" />
+                    </svg>
+                </div>
+                <div>
+                    <h2>Create a Connected App</h2>
+                    <p>Follow these steps in your Salesforce org to enable OAuth access</p>
+                </div>
+            </div>
+
+            <div class="guide-steps">
+                <div class="guide-step">
+                    <div class="guide-step-number">1</div>
+                    <div class="guide-step-content">
+                        <h3>Open Setup</h3>
+                        <p>Log into your Salesforce org → click the <kbd>⚙️ Gear icon</kbd> (top-right) → select
+                            <strong>Setup</strong>
+                        </p>
+                    </div>
+                </div>
+
+                <div class="guide-step">
+                    <div class="guide-step-number">2</div>
+                    <div class="guide-step-content">
+                        <h3>Navigate to App Manager</h3>
+                        <p>In the Quick Find box, type <kbd>App Manager</kbd> → click <strong>App Manager</strong></p>
+                    </div>
+                </div>
+
+                <div class="guide-step">
+                    <div class="guide-step-number">3</div>
+                    <div class="guide-step-content">
+                        <h3>Create New Connected App</h3>
+                        <p>Click <strong>New Connected App</strong> (top-right button)</p>
+                    </div>
+                </div>
+
+                <div class="guide-step">
+                    <div class="guide-step-number">4</div>
+                    <div class="guide-step-content">
+                        <h3>Basic Information</h3>
+                        <div class="field-hint">
+                            <div class="hint-row"><span class="hint-label">Connected App Name</span><span
+                                    class="hint-value">Salesforce AI Agent</span></div>
+                            <div class="hint-row"><span class="hint-label">API Name</span><span
+                                    class="hint-value">(auto-fills)</span></div>
+                            <div class="hint-row"><span class="hint-label">Contact Email</span><span
+                                    class="hint-value">your-email@example.com</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="guide-step">
+                    <div class="guide-step-number">5</div>
+                    <div class="guide-step-content">
+                        <h3>Enable OAuth Settings</h3>
+                        <p>Check ✅ <strong>Enable OAuth Settings</strong>, then configure:</p>
+                        <div class="field-hint">
+                            <div class="hint-row">
+                                <span class="hint-label">Callback URL</span>
+                                <span class="hint-value copyable" id="callbackUrl"
+                                    onclick="copyText(this)">http://localhost:5000/callback
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                                    </svg>
+                                </span>
+                            </div>
+                            <div class="hint-row">
+                                <span class="hint-label">Selected OAuth Scopes</span>
+                                <span class="hint-value">Full access (full)<br>Perform requests at any time
+                                    (refresh_token, offline_access)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="guide-step">
+                    <div class="guide-step-number">6</div>
+                    <div class="guide-step-content">
+                        <h3>Save & Copy Credentials</h3>
+                        <p>Click <strong>Save</strong> → then <strong>Continue</strong>. On the next page, click
+                            <strong>Manage Consumer Details</strong>. You'll get:
+                        </p>
+                        <div class="field-hint highlight">
+                            <div class="hint-row"><span class="hint-label">Consumer Key</span><span
+                                    class="hint-value">Copy this → paste in Step 2</span></div>
+                            <div class="hint-row"><span class="hint-label">Consumer Secret</span><span
+                                    class="hint-value">Copy this → paste in Step 2</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="guide-step">
+                    <div class="guide-step-number">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="3">
+                            <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                    </div>
+                    <div class="guide-step-content">
+                        <h3>You're Ready!</h3>
+                        <p>Once you have the <strong>Consumer Key</strong> and <strong>Consumer Secret</strong>, click
+                            the button below to proceed.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-footer">
+                <button class="btn btn-primary" onclick="goToStep(2)" id="nextBtn1">
+                    I have my credentials — Continue
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                        <polyline points="12 5 19 12 12 19" />
+                    </svg>
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 2: Credential Form -->
+        <section class="step-panel" id="stepPanel2">
+            <div class="panel-header">
+                <div class="panel-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                </div>
+                <div>
+                    <h2>Enter Your Credentials</h2>
+                    <p>Paste the Consumer Key and Secret from your Connected App</p>
+                </div>
+            </div>
+
+            <form class="credential-form" id="credentialForm" onsubmit="return false;">
+                <div class="form-group">
+                    <label for="consumerKey">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path
+                                d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                        </svg>
+                        Consumer Key
+                    </label>
+                    <div class="input-container">
+                        <input type="text" id="consumerKey" placeholder="3MVG9..." required autocomplete="off">
+                        <div class="input-status" id="keyStatus"></div>
+                    </div>
+                    <span class="form-hint">Found in Connected App → Manage Consumer Details</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="consumerSecret">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                        </svg>
+                        Consumer Secret
+                    </label>
+                    <div class="input-container">
+                        <input type="password" id="consumerSecret" placeholder="•••••••••••••" required
+                            autocomplete="off">
+                        <button type="button" class="toggle-visibility" onclick="togglePassword('consumerSecret', this)"
+                            title="Show/Hide">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" class="eye-icon">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                <circle cx="12" cy="12" r="3" />
+                            </svg>
+                        </button>
+                        <div class="input-status" id="secretStatus"></div>
+                    </div>
+                    <span class="form-hint">Found in Connected App → Manage Consumer Details</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="orgUrl">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="2" y1="12" x2="22" y2="12" />
+                            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                        </svg>
+                        Salesforce Org URL
+                    </label>
+                    <div class="input-container">
+                        <input type="url" id="orgUrl" placeholder="https://login.salesforce.com" required
+                            value="https://login.salesforce.com" autocomplete="off">
+                        <div class="input-status" id="urlStatus"></div>
+                    </div>
+                    <span class="form-hint">Use <code>https://login.salesforce.com</code> for production or
+                        <code>https://test.salesforce.com</code> for sandbox</span>
+                </div>
+
+                <div class="info-callout">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                    </svg>
+                    <div>
+                        <strong>Your credentials are saved locally</strong>
+                        <p>They are stored in your <code>.env</code> file on this machine. Nothing is sent to any
+                            external server.</p>
+                    </div>
+                </div>
+            </form>
+
+            <div class="panel-footer dual">
+                <button class="btn btn-secondary" onclick="goToStep(1)">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="19" y1="12" x2="5" y2="12" />
+                        <polyline points="12 19 5 12 12 5" />
+                    </svg>
+                    Back
+                </button>
+                <button class="btn btn-primary" onclick="saveAndConnect()" id="connectBtn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                    </svg>
+                    Connect with Salesforce
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 3: Connecting / Success -->
+        <section class="step-panel" id="stepPanel3">
+            <!-- Loading State -->
+            <div class="connect-state" id="connectLoading">
+                <div class="spinner-ring"></div>
+                <h2>Connecting to Salesforce...</h2>
+                <p>You'll be redirected to Salesforce to authorize access.</p>
+            </div>
+
+            <!-- Success State -->
+            <div class="connect-state" id="connectSuccess" style="display: none;">
+                <div class="success-icon">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                        <polyline points="22 4 12 14.01 9 11.01" />
+                    </svg>
+                </div>
+                <h2>Connected Successfully!</h2>
+                <p id="successOrgUrl">Your Salesforce org is now linked.</p>
+                <button class="btn btn-primary" onclick="goToChat()" id="goToChatBtn">
+                    Open AI Agent Chat
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                        <polyline points="12 5 19 12 12 19" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Error State -->
+            <div class="connect-state" id="connectError" style="display: none;">
+                <div class="error-icon">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="15" y1="9" x2="9" y2="15" />
+                        <line x1="9" y1="9" x2="15" y2="15" />
+                    </svg>
+                </div>
+                <h2>Connection Failed</h2>
+                <p id="errorMessage">Something went wrong. Please check your credentials and try again.</p>
+                <button class="btn btn-secondary" onclick="goToStep(2)">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="19" y1="12" x2="5" y2="12" />
+                        <polyline points="12 19 5 12 12 5" />
+                    </svg>
+                    Go Back & Retry
+                </button>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="setup-footer">
+            <span>Powered by Google Gemini + Salesforce Platform</span>
+        </footer>
+    </div>
+
+    <script src="setup.js"></script>
+</body>
+
+</html>

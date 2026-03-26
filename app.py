@@ -16,7 +16,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from google import genai
 from google.genai import types
-from otp_manager import create_and_send_otp, verify_otp, cleanup_expired
+
 
 # ── Load .env ────────────────────────────────────────────────
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -180,19 +180,33 @@ YOUR CAPABILITIES:
 11. Render interactive creation forms in the chat (Lead, Account, Contact, Opportunity)
 12. Render interactive UPDATE forms pre-populated with existing record values
 
-FORM RENDERING RULE (CRITICAL — ALWAYS FOLLOW FOR CREATE AND UPDATE REQUESTS):
-- When the user asks to "create a new lead", "add an account", "create a contact", "new opportunity", etc.
-  and does NOT provide all the required field values in their message → ALWAYS call render_create_form.
-  This renders an interactive form directly in the chat where the user can fill in fields and submit.
-- If the user DOES provide all required fields inline (e.g. "create a lead: John Doe at Acme Corp, email john@acme.com")
-  → Use create_record directly with the provided values.
-- When the user asks to "update this lead", "edit this account", "modify the record", etc.
-  → ALWAYS call render_update_form with the object_name and record_id.
-  This fetches the current field values and renders a pre-populated form so the user can see
-  existing values, modify what they need, and submit. The user does NOT need to re-type unchanged fields.
-- If the user provides a specific field change inline (e.g. "change the status to Working")
-  → Use update_record directly, no form needed.
-- NEVER ask the user to type out each field value one by one. Just render the form.
+FORM RENDERING RULE (CRITICAL — NEVER ASK FOR FIELDS, ALWAYS RENDER THE FORM IMMEDIATELY):
+- When the user asks to create ANY record (lead, account, contact, opportunity):
+  → IMMEDIATELY call render_create_form. Do NOT ask for missing fields. The form handles that.
+  → NEVER respond with text asking for field values. ALWAYS call the tool first.
+- PRE-FILL RULE: Extract ANY values the user provided and pass them in provided_values.
+  Example: "Create a lead named Deepak Adhikari" → call render_create_form with:
+    object_name="Lead", provided_values={{"FirstName": "Deepak", "LastName": "Adhikari"}}
+  Example: "Create an account with name Priyanka1234" → call render_create_form with:
+    object_name="Account", provided_values={{"Name": "Priyanka1234"}}
+  Example: "Add a lead John Doe at Acme Corp, email john@acme.com" → call render_create_form with:
+    object_name="Lead", provided_values={{"FirstName": "John", "LastName": "Doe", "Company": "Acme Corp", "Email": "john@acme.com"}}, extra_fields=["Email"]
+  Example: "I want to create a new account" → call render_create_form with:
+    object_name="Account" (no provided_values, form opens empty)
+- DYNAMIC EXTRA FIELDS: If the user mentions fields NOT in the default form (Phone, Email, Title, etc.),
+  pass those field API names in extra_fields so the form dynamically adds them.
+- ONLY skip the form when the user provides ALL mandatory fields inline:
+  Lead mandatory = LastName + Company + Email + Status (all four must be given explicitly)
+  Account mandatory = Name + CurrencyIsoCode (both must be given explicitly)
+  In that case → use create_record directly. Otherwise → ALWAYS render the form.
+- FORBIDDEN RESPONSES (never say these when user asks to create a record):
+  ✗ "What is the company name?" → WRONG. Render the form instead.
+  ✗ "What is the currency?" → WRONG. Render the form instead.
+  ✗ "What status do you want?" → WRONG. Render the form instead.
+  ✗ "A lead requires..." → WRONG. Render the form instead.
+  ✗ "Please provide..." → WRONG. Render the form instead.
+- For UPDATE requests: call render_update_form with object_name, record_id, and extra_fields if user mentions non-default fields.
+  If the user provides a specific field change inline (e.g. "change the status to Working") → use update_record directly.
 - After calling render_create_form or render_update_form, keep your response SHORT (under 30 words). The form speaks for itself.
 - Supported objects for forms: Lead, Account, Contact, Opportunity. For other objects, use create_record/update_record.
 
@@ -1147,17 +1161,28 @@ TOOLS = [
         types.FunctionDeclaration(
             name="render_create_form",
             description=(
-                "Render an interactive creation form in the chat UI for a Salesforce object (Lead, Account, Contact, Opportunity, etc.). "
-                "Use this INSTEAD of create_record when the user asks to 'create a new lead', 'add an account', 'create a contact', etc. "
-                "and does NOT provide all the field values upfront. The form lets the user fill in fields and submit directly from the chat. "
-                "If the user already provides ALL required field values in their message, use create_record directly instead."
+                "Render an interactive creation form in the chat UI for a Salesforce object (Lead, Account, Contact, Opportunity). "
+                "Use this INSTEAD of create_record when the user does NOT provide ALL required field values. "
+                "Pass any values the user DID mention in provided_values so the form is pre-filled. "
+                "Pass any extra field API names the user mentioned (beyond the default form fields) in extra_fields "
+                "so those fields are dynamically added to the form. "
+                "If the user provides ALL required fields, use create_record directly instead."
             ),
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
                     "object_name": types.Schema(
                         type="STRING",
-                        description="The Salesforce object API name to create. E.g. 'Lead', 'Account', 'Contact', 'Opportunity'"
+                        description="The Salesforce object API name. E.g. 'Lead', 'Account', 'Contact', 'Opportunity'"
+                    ),
+                    "provided_values": types.Schema(
+                        type="OBJECT",
+                        description="Values the user already provided, as {SFFieldApiName: value}. E.g. {'FirstName': 'John', 'Company': 'Acme'}. These will pre-fill the form."
+                    ),
+                    "extra_fields": types.Schema(
+                        type="ARRAY",
+                        items=types.Schema(type="STRING"),
+                        description="Additional Salesforce field API names the user mentioned that are NOT in the default form schema. E.g. ['Phone', 'Email', 'Title', 'Industry']. These will be added as extra TextFields to the form."
                     ),
                 },
                 required=["object_name"]
@@ -1170,6 +1195,7 @@ TOOLS = [
                 "The form is pre-populated with the record's current field values so the user can see "
                 "what was previously entered and edit any fields. Use this when the user asks to "
                 "'update a lead', 'edit this account', 'modify the record', etc. "
+                "Pass extra_fields if the user mentions fields not in the default form schema. "
                 "You MUST provide the record_id of the record to update."
             ),
             parameters=types.Schema(
@@ -1182,6 +1208,11 @@ TOOLS = [
                     "record_id": types.Schema(
                         type="STRING",
                         description="The Salesforce record ID (e.g. '00Q...' for Lead, '001...' for Account)"
+                    ),
+                    "extra_fields": types.Schema(
+                        type="ARRAY",
+                        items=types.Schema(type="STRING"),
+                        description="Additional SF field API names the user wants to edit that are NOT in the default form. E.g. ['Phone', 'Website', 'Industry']"
                     ),
                 },
                 required=["object_name", "record_id"]
@@ -1198,10 +1229,6 @@ _pending_a2ui_surfaces = []
 
 _chart_surface_counter = 0
 
-# ── OTP Pending Operations Store ─────────────────────────────
-# Stores operations waiting for OTP verification:
-# { session_key: { "operation": "update"|"delete", "object_name": ..., "record_id": ..., "field_values": ... } }
-_pending_operations = {}
 
 
 def _build_a2ui_chart_surface(chart_config):
@@ -1355,6 +1382,7 @@ _FORM_SCHEMAS = {
             {"id": "fname",    "component": "TextField",     "label": "First Name",     "path": "/lead/firstName",   "sfField": "FirstName"},
             {"id": "lname",    "component": "TextField",     "label": "Last Name",      "path": "/lead/lastName",    "sfField": "LastName",      "required": True},
             {"id": "company",  "component": "TextField",     "label": "Company",        "path": "/lead/company",     "sfField": "Company",       "required": True},
+            {"id": "email",    "component": "TextField",     "label": "Email",          "path": "/lead/email",       "sfField": "Email",         "required": True, "inputType": "email"},
             {"id": "currency", "component": "DropDown",      "label": "Lead Currency",  "path": "/lead/currency",    "sfField": "CurrencyIsoCode",
              "options": ["EUR", "USD"]},
             {"id": "status",   "component": "DropDown",      "label": "Lead Status",    "path": "/lead/status",      "sfField": "Status",        "required": True,
@@ -1369,7 +1397,7 @@ _FORM_SCHEMAS = {
         "fields": [
             {"id": "name",     "component": "TextField",     "label": "Account Name",    "path": "/account/name",     "sfField": "Name",            "required": True},
             {"id": "currency", "component": "DropDown",      "label": "Account Currency", "path": "/account/currency", "sfField": "CurrencyIsoCode", "required": True,
-             "options": ["EUR", "USD", "GBP", "INR", "JPY", "AUD", "CAD", "CHF", "CNY", "SGD"]},
+             "options": ["EUR", "USD"]},
         ],
         "submitLabel": "Create Account",
         "submitAction": "createAccount",
@@ -1406,7 +1434,7 @@ _FORM_SCHEMAS = {
 }
 
 
-def _build_a2ui_form_surface(object_name: str, mode: str = "create", record_id: str = None, prefill: dict = None) -> list:
+def _build_a2ui_form_surface(object_name: str, mode: str = "create", record_id: str = None, prefill: dict = None, extra_fields: list = None) -> list:
     """Build an A2UI surface with TextField, DropDown, RadioGroup, DateTimeInput, and
     Button components following the A2UI v0.8 spec.
     
@@ -1415,6 +1443,7 @@ def _build_a2ui_form_surface(object_name: str, mode: str = "create", record_id: 
         mode: 'create' or 'update'
         record_id: Salesforce record ID (required for update)
         prefill: Dict of {SF_field_api_name: value} to pre-populate fields
+        extra_fields: List of extra SF field API names to add as TextFields beyond the schema
     """
     global _chart_surface_counter
     _chart_surface_counter += 1
@@ -1444,7 +1473,36 @@ def _build_a2ui_form_surface(object_name: str, mode: str = "create", record_id: 
         submit_label = schema["submitLabel"]
         submit_action = schema["submitAction"]
 
-    fields = schema["fields"]
+    fields = list(schema["fields"])  # copy so we don't mutate the schema
+
+    # ── Dynamically add extra fields requested by the AI ──
+    if extra_fields:
+        existing_sf_fields = {f["sfField"] for f in fields}
+        path_prefix = schema["pathPrefix"]
+        for sf_field in extra_fields:
+            if sf_field not in existing_sf_fields:
+                # Auto-generate a TextField for this extra field
+                field_id = f"dyn_{sf_field.lower().replace('__c', '').replace('__', '_')}"
+                # Convert API name to a human-readable label
+                label = sf_field.replace("__c", "").replace("_", " ").title()
+                # Detect input type hints from field name
+                input_type = "text"
+                if "email" in sf_field.lower():
+                    input_type = "email"
+                elif "phone" in sf_field.lower() or "mobile" in sf_field.lower() or "fax" in sf_field.lower():
+                    input_type = "tel"
+                elif "url" in sf_field.lower() or "website" in sf_field.lower():
+                    input_type = "url"
+                fields.append({
+                    "id": field_id,
+                    "component": "TextField",
+                    "label": label,
+                    "path": f"{path_prefix}/{field_id}",
+                    "sfField": sf_field,
+                    "inputType": input_type,
+                })
+                print(f"  [FORM] Added dynamic field: {sf_field} → {label}")
+
     field_ids = [f["id"] for f in fields]
     all_child_ids = ["title"] + field_ids + ["submit"]
 
@@ -1594,87 +1652,8 @@ def _build_a2ui_form_surface(object_name: str, mode: str = "create", record_id: 
 
 
 
-def _get_record_email(sf, object_name, record_id):
-    """Fetch the email for OTP verification.
-
-    Resolution chain:
-    - Lead / Contact / Case → direct Email field
-    - Account → find the primary Contact linked to the Account → use Contact.Email
-    - Opportunity → find the related Account → find linked Contact → use Contact.Email
-    - Other objects → try Email field, then fallback to SF_USERNAME
-    """
-    # Objects with a direct Email field
-    DIRECT_EMAIL_OBJECTS = {"Lead", "Contact", "Case", "CampaignMember"}
-
-    try:
-        # ── 1. Direct Email field (Lead, Contact, Case, etc.) ──
-        if object_name in DIRECT_EMAIL_OBJECTS:
-            soql = f"SELECT Email FROM {object_name} WHERE Id = '{record_id}' LIMIT 1"
-            result = sf.run_soql(soql)
-            if "error" not in result:
-                records = result.get("records", [])
-                if records and records[0].get("Email"):
-                    email = records[0]["Email"]
-                    print(f"  [OTP] Found {object_name} email: {email}")
-                    return email
-
-        # ── 2. Account → find linked Contact's email ──
-        elif object_name == "Account":
-            soql = f"SELECT Id, Email FROM Contact WHERE AccountId = '{record_id}' AND Email != null ORDER BY CreatedDate ASC LIMIT 1"
-            result = sf.run_soql(soql)
-            if "error" not in result:
-                records = result.get("records", [])
-                if records and records[0].get("Email"):
-                    email = records[0]["Email"]
-                    print(f"  [OTP] Found Contact email for Account: {email}")
-                    return email
-
-        # ── 3. Opportunity → Account → linked Contact's email ──
-        elif object_name == "Opportunity":
-            # First get the AccountId from the Opportunity
-            soql = f"SELECT AccountId FROM Opportunity WHERE Id = '{record_id}' LIMIT 1"
-            result = sf.run_soql(soql)
-            if "error" not in result:
-                records = result.get("records", [])
-                account_id = records[0].get("AccountId") if records else None
-                if account_id:
-                    # Now find a Contact linked to that Account
-                    soql2 = f"SELECT Id, Email FROM Contact WHERE AccountId = '{account_id}' AND Email != null ORDER BY CreatedDate ASC LIMIT 1"
-                    result2 = sf.run_soql(soql2)
-                    if "error" not in result2:
-                        records2 = result2.get("records", [])
-                        if records2 and records2[0].get("Email"):
-                            email = records2[0]["Email"]
-                            print(f"  [OTP] Found Contact email for Opportunity→Account: {email}")
-                            return email
-
-        # ── 4. Other objects → try Email field if it exists ──
-        else:
-            try:
-                desc = sf.describe(object_name)
-                field_names = [f.get("name") for f in desc.get("fields", [])]
-                if "Email" in field_names:
-                    soql = f"SELECT Email FROM {object_name} WHERE Id = '{record_id}' LIMIT 1"
-                    result = sf.run_soql(soql)
-                    if "error" not in result:
-                        records = result.get("records", [])
-                        if records and records[0].get("Email"):
-                            email = records[0]["Email"]
-                            print(f"  [OTP] Found {object_name} email: {email}")
-                            return email
-            except Exception:
-                pass
-
-    except Exception as e:
-        print(f"  [OTP] Could not fetch email for {object_name} {record_id}: {e}")
-
-    # Fallback to Salesforce user email
-    print(f"  [OTP] No email found in chain, falling back to {SF_USERNAME}")
-    return SF_USERNAME
-
-
 def handle_function_call(function_call, sf):
-    global _pending_charts, _pending_a2ui_surfaces, _pending_operations
+    global _pending_charts, _pending_a2ui_surfaces
     name = function_call.name
     args = function_call.args or {}
 
@@ -1689,68 +1668,14 @@ def handle_function_call(function_call, sf):
     elif name == "create_record":
         return sf.create_record(args.get("object_name", ""), dict(args.get("field_values", {})))
     elif name == "update_record":
-        # ── OTP GATE: Intercept update and require verification ──
         obj_name = args.get("object_name", "")
         record_id = args.get("record_id", "")
         field_values = dict(args.get("field_values", {}))
-        session_key = f"update_{obj_name}_{record_id}_{uuid.uuid4().hex[:8]}"
-        operation_summary = f"Update {obj_name} record ({record_id}): {json.dumps(field_values)}"
-
-        # Store pending operation
-        _pending_operations[session_key] = {
-            "operation": "update",
-            "object_name": obj_name,
-            "record_id": record_id,
-            "field_values": field_values,
-        }
-
-        # Send OTP to the record's registered email
-        recipient_email = _get_record_email(sf, obj_name, record_id)
-        otp_result = create_and_send_otp(sf.auth, recipient_email, session_key, operation_summary)
-
-        if "error" in otp_result:
-            _pending_operations.pop(session_key, None)
-            return {"error": f"OTP verification failed to initiate: {otp_result['error']}"}
-
-        return {
-            "otp_required": True,
-            "session_key": session_key,
-            "message": f"⚠️ Security verification required. A verification code has been sent to {recipient_email}. Please enter the code to authorize this update.",
-            "operation": "update",
-            "object": obj_name,
-            "record_id": record_id,
-        }
-
+        return sf.update_record(obj_name, record_id, field_values)
     elif name == "delete_record":
-        # ── OTP GATE: Intercept delete and require verification ──
         obj_name = args.get("object_name", "")
         record_id = args.get("record_id", "")
-        session_key = f"delete_{obj_name}_{record_id}_{uuid.uuid4().hex[:8]}"
-        operation_summary = f"Delete {obj_name} record ({record_id})"
-
-        # Store pending operation
-        _pending_operations[session_key] = {
-            "operation": "delete",
-            "object_name": obj_name,
-            "record_id": record_id,
-        }
-
-        # Send OTP to the record's registered email
-        recipient_email = _get_record_email(sf, obj_name, record_id)
-        otp_result = create_and_send_otp(sf.auth, recipient_email, session_key, operation_summary)
-
-        if "error" in otp_result:
-            _pending_operations.pop(session_key, None)
-            return {"error": f"OTP verification failed to initiate: {otp_result['error']}"}
-
-        return {
-            "otp_required": True,
-            "session_key": session_key,
-            "message": f"⚠️ Security verification required. A verification code has been sent to {recipient_email}. Please enter the code to authorize this deletion.",
-            "operation": "delete",
-            "object": obj_name,
-            "record_id": record_id,
-        }
+        return sf.delete_record(obj_name, record_id)
     elif name == "generate_chart":
         chart_config = {
             "chart_type": args.get("chart_type", "bar"),
@@ -1894,22 +1819,44 @@ def handle_function_call(function_call, sf):
         return result
     elif name == "render_create_form":
         obj_name = args.get("object_name", "Lead")
-        print(f"  [FORM] Rendering create form for {obj_name}")
-        form_surface = _build_a2ui_form_surface(obj_name)
+        provided_values = dict(args.get("provided_values", {}) or {})
+        extra_fields = list(args.get("extra_fields", []) or [])
+
+        # Also auto-detect extra fields from provided_values that aren't in the schema
+        schema = _FORM_SCHEMAS.get(obj_name, {})
+        schema_sf_fields = {f["sfField"] for f in schema.get("fields", [])}
+        for sf_field in provided_values:
+            if sf_field not in schema_sf_fields and sf_field not in extra_fields:
+                extra_fields.append(sf_field)
+
+        prefill_count = len(provided_values)
+        extra_count = len(extra_fields)
+        print(f"  [FORM] Rendering create form for {obj_name} (prefill={prefill_count}, extra_fields={extra_count})")
+
+        form_surface = _build_a2ui_form_surface(
+            obj_name, prefill=provided_values if provided_values else None, extra_fields=extra_fields if extra_fields else None
+        )
         _pending_a2ui_surfaces.append(form_surface)
+
+        fill_note = f" Some fields have been pre-filled from your input." if prefill_count else ""
+        if prefill_count:
+            brief_msg = f"Here's a form to create a new {obj_name} — I've pre-filled what you provided. Review and complete the remaining fields."
+        else:
+            brief_msg = f"Here's a form to create a new {obj_name}. Fill in the details and click the button to submit."
         return {
             "status": "rendered",
             "_instruction": (
-                f"An interactive {obj_name} creation form has been rendered in the chat UI. "
+                f"An interactive {obj_name} creation form has been rendered in the chat UI.{fill_note} "
                 f"Do NOT describe each field or repeat the form contents. Just tell the user briefly: "
-                f"'Here's a form to create a new {obj_name}. Fill in the details and click the button to create it in Salesforce.' "
+                f"'{brief_msg}' "
                 f"Keep your response under 30 words."
             )
         }
     elif name == "render_update_form":
         obj_name = args.get("object_name", "Lead")
         record_id = args.get("record_id", "")
-        print(f"  [FORM] Rendering update form for {obj_name} {record_id}")
+        extra_fields = list(args.get("extra_fields", []) or [])
+        print(f"  [FORM] Rendering update form for {obj_name} {record_id} (extra_fields={len(extra_fields)})")
 
         if not record_id:
             return {"error": "record_id is required for render_update_form."}
@@ -1919,8 +1866,11 @@ def handle_function_call(function_call, sf):
         try:
             schema = _FORM_SCHEMAS.get(obj_name)
             if schema:
-                # Only fetch fields that are in the form schema
+                # Fetch schema fields + any extra fields
                 sf_fields = [f["sfField"] for f in schema["fields"]]
+                for ef in extra_fields:
+                    if ef not in sf_fields:
+                        sf_fields.append(ef)
                 field_csv = ", ".join(sf_fields)
                 soql = f"SELECT {field_csv} FROM {obj_name} WHERE Id = '{record_id}' LIMIT 1"
                 print(f"  [FORM] Fetching current values: {soql}")
@@ -1940,7 +1890,8 @@ def handle_function_call(function_call, sf):
             print(f"  [FORM] Error fetching prefill data: {e}")
 
         form_surface = _build_a2ui_form_surface(
-            obj_name, mode="update", record_id=record_id, prefill=prefill
+            obj_name, mode="update", record_id=record_id, prefill=prefill,
+            extra_fields=extra_fields if extra_fields else None
         )
         _pending_a2ui_surfaces.append(form_surface)
         return {
@@ -2024,107 +1975,6 @@ def truncate_result(result):
 def index():
     return send_from_directory("frontend", "index.html")
 
-
-# ── OTP Verification Endpoints ───────────────────────────────
-
-@app.route("/api/otp/verify", methods=["POST"])
-def otp_verify():
-    """Verify OTP and execute the pending operation if valid."""
-    global _pending_operations
-
-    data = request.json
-    session_key = data.get("session_key", "")
-    user_otp = data.get("otp", "")
-
-    if not session_key or not user_otp:
-        return jsonify({"error": "Missing session_key or otp."}), 400
-
-    # Verify the OTP
-    result = verify_otp(session_key, user_otp)
-
-    if not result.get("verified"):
-        return jsonify({
-            "verified": False,
-            "error": result.get("error", "Verification failed.")
-        })
-
-    # OTP verified — execute the pending operation
-    pending = _pending_operations.pop(session_key, None)
-    if not pending:
-        return jsonify({"error": "Pending operation not found or already executed."}), 404
-
-    operation = pending["operation"]
-    obj_name = pending["object_name"]
-    record_id = pending["record_id"]
-
-    try:
-        if operation == "update":
-            field_values = pending.get("field_values", {})
-            sf.update_record(obj_name, record_id, field_values)
-            # Also add to conversation history so the AI knows
-            conversation_history.append(
-                types.Content(role="user", parts=[types.Part(text=f"[SYSTEM: OTP verified. {obj_name} record {record_id} has been updated successfully with fields: {json.dumps(field_values)}]")])
-            )
-            return jsonify({
-                "verified": True,
-                "success": True,
-                "message": f"✅ Verified! {obj_name} record ({record_id}) updated successfully.",
-                "operation": operation,
-                "object": obj_name,
-                "record_id": record_id,
-            })
-        elif operation == "delete":
-            sf.delete_record(obj_name, record_id)
-            conversation_history.append(
-                types.Content(role="user", parts=[types.Part(text=f"[SYSTEM: OTP verified. {obj_name} record {record_id} has been deleted successfully.]")])
-            )
-            return jsonify({
-                "verified": True,
-                "success": True,
-                "message": f"✅ Verified! {obj_name} record ({record_id}) deleted successfully.",
-                "operation": operation,
-                "object": obj_name,
-                "record_id": record_id,
-            })
-        else:
-            return jsonify({"error": f"Unknown operation: {operation}"}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/otp/resend", methods=["POST"])
-def otp_resend():
-    """Resend OTP for a pending operation."""
-    data = request.json
-    session_key = data.get("session_key", "")
-
-    if not session_key:
-        return jsonify({"error": "Missing session_key."}), 400
-
-    pending = _pending_operations.get(session_key)
-    if not pending:
-        return jsonify({"error": "No pending operation found. Please retry the original operation."}), 404
-
-    operation = pending["operation"]
-    obj_name = pending["object_name"]
-    record_id = pending["record_id"]
-    field_values = pending.get("field_values", {})
-
-    if operation == "update":
-        operation_summary = f"Update {obj_name} record ({record_id}): {json.dumps(field_values)}"
-    else:
-        operation_summary = f"Delete {obj_name} record ({record_id})"
-
-    recipient_email = SF_USERNAME
-    otp_result = create_and_send_otp(sf.auth, recipient_email, session_key, operation_summary)
-
-    if "error" in otp_result:
-        return jsonify({"error": otp_result["error"]}), 500
-
-    return jsonify({
-        "success": True,
-        "message": f"A new verification code has been sent to {recipient_email}."
-    })
 
 
 
