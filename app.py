@@ -198,6 +198,8 @@ FORM RENDERING RULE (CRITICAL — NEVER ASK FOR FIELDS, ALWAYS RENDER THE FORM I
 - ONLY skip the form when the user provides ALL mandatory fields inline:
   Lead mandatory = LastName + Company + Email + Status (all four must be given explicitly)
   Account mandatory = Name + CurrencyIsoCode (both must be given explicitly)
+  Task mandatory = Subject + Status + Priority (all three must be given explicitly)
+  Event mandatory = Subject + StartDateTime + EndDateTime (all three must be given explicitly)
   In that case → use create_record directly. Otherwise → ALWAYS render the form.
 - FORBIDDEN RESPONSES (never say these when user asks to create a record):
   ✗ "What is the company name?" → WRONG. Render the form instead.
@@ -208,7 +210,7 @@ FORM RENDERING RULE (CRITICAL — NEVER ASK FOR FIELDS, ALWAYS RENDER THE FORM I
 - For UPDATE requests: call render_update_form with object_name, record_id, and extra_fields if user mentions non-default fields.
   If the user provides a specific field change inline (e.g. "change the status to Working") → use update_record directly.
 - After calling render_create_form or render_update_form, keep your response SHORT (under 30 words). The form speaks for itself.
-- Supported objects for forms: Lead, Account, Contact, Opportunity. For other objects, use create_record/update_record.
+- Supported objects for forms: Lead, Account, Contact, Opportunity, Task, Event. For other objects, use create_record/update_record.
 
 PERMISSION-AWARE ANALYTICS (CRITICAL — ALWAYS USE FOR THESE INTENTS):
 - When the user asks about pipeline, deals at risk, tasks, team performance, forecast,
@@ -1430,6 +1432,34 @@ _FORM_SCHEMAS = {
         ],
         "submitLabel": "Create Opportunity",
         "submitAction": "createOpportunity",
+    },
+    "Task": {
+        "title": "New Task",
+        "pathPrefix": "/task",
+        "fields": [
+            {"id": "subject",  "component": "TextField",     "label": "Subject",        "path": "/task/subject",     "sfField": "Subject",       "required": True},
+            {"id": "status",   "component": "DropDown",      "label": "Status",         "path": "/task/status",      "sfField": "Status",        "required": True,
+             "options": ["Not Started", "In Progress", "Completed", "Waiting on someone else", "Deferred"]},
+            {"id": "priority", "component": "DropDown",      "label": "Priority",       "path": "/task/priority",    "sfField": "Priority",      "required": True,
+             "options": ["High", "Normal", "Low"]},
+            {"id": "duedate",  "component": "DateTimeInput",  "label": "Due Date",      "path": "/task/dueDate",     "sfField": "ActivityDate"},
+            {"id": "desc",     "component": "TextField",     "label": "Comments",       "path": "/task/desc",        "sfField": "Description"},
+        ],
+        "submitLabel": "Create Task",
+        "submitAction": "createTask",
+    },
+    "Event": {
+        "title": "New Event",
+        "pathPrefix": "/event",
+        "fields": [
+            {"id": "subject",  "component": "TextField",     "label": "Subject",        "path": "/event/subject",    "sfField": "Subject",       "required": True},
+            {"id": "startdt",  "component": "DateTimeInput",  "label": "Start Date/Time","path": "/event/startDt",   "sfField": "StartDateTime", "required": True},
+            {"id": "enddt",    "component": "DateTimeInput",  "label": "End Date/Time",  "path": "/event/endDt",     "sfField": "EndDateTime",   "required": True},
+            {"id": "location", "component": "TextField",     "label": "Location",       "path": "/event/location",   "sfField": "Location"},
+            {"id": "desc",     "component": "TextField",     "label": "Description",    "path": "/event/desc",       "sfField": "Description"},
+        ],
+        "submitLabel": "Create Event",
+        "submitAction": "createEvent",
     },
 }
 
