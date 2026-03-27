@@ -785,3 +785,268 @@
 .a2ui-radio-label {
     cursor: pointer;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   A2UI Report Styles
+   Premium report rendering surfaces
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Report Surface ─────────────────────────────────────── */
+.a2ui-report-surface {
+    background: linear-gradient(145deg, #0f0f1a 0%, #141420 50%, #181828 100%);
+    border: 1px solid #2a2a3a;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow:
+        0 4px 24px rgba(0, 0, 0, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    position: relative;
+    margin-top: 12px;
+    animation: a2uiSurfaceIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.a2ui-report-surface::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #8b5cf6, #6366f1, #06b6d4, #10b981);
+    background-size: 300% 100%;
+    animation: a2uiGradientShift 6s ease infinite;
+    z-index: 1;
+    opacity: 0.8;
+}
+
+/* ── Report Header ──────────────────────────────────────── */
+.a2ui-report-header {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    background: linear-gradient(135deg,
+        rgba(139, 92, 246, 0.08) 0%,
+        rgba(99, 102, 241, 0.06) 50%,
+        rgba(6, 182, 212, 0.04) 100%);
+    border-bottom: 1px solid rgba(42, 42, 58, 0.8);
+}
+
+.a2ui-report-icon {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(99, 102, 241, 0.15));
+    border-radius: 8px;
+    color: #a78bfa;
+}
+
+.a2ui-report-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e8e8f0;
+    letter-spacing: -0.2px;
+    flex: 1;
+}
+
+.a2ui-report-format-badge {
+    display: inline-flex;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    border: 1px solid;
+}
+
+.a2ui-report-format-badge.tabular {
+    background: rgba(99, 102, 241, 0.1);
+    color: #818cf8;
+    border-color: rgba(99, 102, 241, 0.25);
+}
+
+.a2ui-report-format-badge.summary {
+    background: rgba(6, 182, 212, 0.1);
+    color: #22d3ee;
+    border-color: rgba(6, 182, 212, 0.25);
+}
+
+.a2ui-report-format-badge.matrix {
+    background: rgba(139, 92, 246, 0.1);
+    color: #a78bfa;
+    border-color: rgba(139, 92, 246, 0.25);
+}
+
+/* ── Report Table ────────────────────────────────────────── */
+.a2ui-report-table-wrapper {
+    position: relative;
+    z-index: 1;
+    overflow-x: auto;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.a2ui-report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.a2ui-report-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.a2ui-report-table th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #8888a0;
+    background: linear-gradient(180deg, #13131f, #161624);
+    border-bottom: 1px solid #2a2a3a;
+    white-space: nowrap;
+}
+
+.a2ui-report-table td {
+    padding: 10px 14px;
+    color: #c4c4d8;
+    border-bottom: 1px solid rgba(42, 42, 58, 0.4);
+    white-space: nowrap;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.a2ui-report-table tbody tr:hover {
+    background: rgba(99, 102, 241, 0.04);
+}
+
+.a2ui-report-table tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.01);
+}
+
+.a2ui-report-table tbody tr:nth-child(even):hover {
+    background: rgba(99, 102, 241, 0.04);
+}
+
+/* Group header row */
+.a2ui-report-group-row td {
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0.08), rgba(6, 182, 212, 0.04));
+    font-weight: 600;
+    color: #e8e8f0;
+    padding: 8px 14px;
+    border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+    font-size: 12px;
+    letter-spacing: 0.3px;
+}
+
+/* Aggregate / total row */
+.a2ui-report-total-row td {
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.06), transparent);
+    font-weight: 700;
+    color: #e8e8f0;
+    border-top: 2px solid rgba(16, 185, 129, 0.2);
+    padding: 10px 14px;
+}
+
+/* ── Report Filter Chips ─────────────────────────────────── */
+.a2ui-report-filters {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 18px;
+    border-bottom: 1px solid rgba(42, 42, 58, 0.5);
+}
+
+.a2ui-report-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.15);
+    border-radius: 16px;
+    font-size: 11px;
+    color: #a5a5c0;
+}
+
+.a2ui-report-filter-chip .filter-key {
+    color: #818cf8;
+    font-weight: 600;
+}
+
+/* ── Report Meta Footer ──────────────────────────────────── */
+.a2ui-report-meta {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    border-top: 1px solid rgba(42, 42, 58, 0.5);
+    background: rgba(15, 15, 26, 0.5);
+}
+
+.a2ui-report-meta-text {
+    font-size: 11px;
+    color: #6b6b80;
+}
+
+.a2ui-report-meta-link {
+    font-size: 11px;
+    color: #818cf8;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.a2ui-report-meta-link:hover {
+    color: #a78bfa;
+}
+
+/* ── Report Row Count Badge ─────────────────────────────── */
+.a2ui-report-count-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #34d399;
+}
+
+/* ── Responsive ─────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .a2ui-report-table-wrapper {
+        max-height: 400px;
+    }
+
+    .a2ui-report-table th,
+    .a2ui-report-table td {
+        padding: 8px 10px;
+        font-size: 12px;
+    }
+
+    .a2ui-report-filters {
+        padding: 8px 12px;
+    }
+
+    .a2ui-report-meta {
+        flex-direction: column;
+        gap: 4px;
+        align-items: flex-start;
+    }
+}

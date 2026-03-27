@@ -179,6 +179,7 @@ YOUR CAPABILITIES:
 10. Get permission-aware analytics dashboards (security-trimmed, persona-specific)
 11. Render interactive creation forms in the chat (Lead, Account, Contact, Opportunity)
 12. Render interactive UPDATE forms pre-populated with existing record values
+13. Browse, search, and run Salesforce reports (Tabular, Summary, Matrix) with filters
 
 FORM RENDERING RULE (CRITICAL — NEVER ASK FOR FIELDS, ALWAYS RENDER THE FORM IMMEDIATELY):
 - When the user asks to create ANY record (lead, account, contact, opportunity):
@@ -234,6 +235,25 @@ PERSONA-SPECIFIC DEFAULT RESPONSES:
 - exec         → forecast, team_performance, data_quality focused
 - sales_ops    → data_quality, team_performance, no_activity_accounts focused
 - service_manager → sla_risk_cases, data_quality focused
+
+SALESFORCE REPORTS (CRITICAL — USE THESE TOOLS FOR REPORT REQUESTS):
+- When the user asks about reports ("show me reports", "run a report", "what reports do I have"):
+  1. First call list_reports to show available reports. Present them in a table (Name, Folder, Format, Last Run).
+  2. If user asks to run a specific report → call run_report with the report ID.
+  3. If user asks about report structure → call get_report_metadata.
+  4. If user asks about report folders → call list_report_folders.
+- When presenting report results:
+  • The A2UI surface (KPI cards + metadata) is automatically rendered. Do NOT duplicate it.
+  • Show the data rows in a Markdown table (max 20 rows). Mention total if more exist.
+  • If the report has groupings, organize the table by group.
+  • If group aggregates exist, a chart is automatically generated.
+  • Offer to filter, chart, or export the data.
+- Report folders determine access:
+  • Private = only the owner can see
+  • Public = anyone in the org can see
+  • Shared = shared with specific users/roles
+  • All = every report you can access
+- NEVER ask the user for a report ID — use the names from list_reports results.
 
 WHEN TO USE CHART vs TABLE:
 - metric/gauge  → "How am I doing against target?"
@@ -581,6 +601,357 @@ class SalesforceConnection:
             "contact_name": f"{lead.get('FirstName', '')} {lead.get('LastName', '')}".strip(),
             "message": f"Account '{company}' {'created' if account_created else 'already existed'} and Contact created successfully."
         }
+
+    # ── Salesforce Reports API ──────────────────────────────────
+
+    def _analytics_request(self, method, endpoint, data=None, params=None):
+        """Make an authenticated request to the Salesforce Analytics API."""
+        import requests as req
+        url = f"{self.auth.instance_url}/services/data/v62.0/analytics{endpoint}"
+        headers = self.auth.get_headers()
+        response = req.request(method=method, url=url, headers=headers, json=data, params=params)
+        if response.status_code in (200, 201):
+            return response.json()
+        elif response.status_code == 204:
+            return None
+        else:
+            error_msg = response.text
+            try:
+                error_msg = json.dumps(response.json(), indent=2)
+            except Exception:
+                pass
+            raise Exception(f"Analytics API Error ({response.status_code}): {error_msg}")
+
+    def list_report_folders(self):
+        """List all report folders the current user can access."""
+        if not self.connected:
+            return {"error": "Not connected to Salesforce."}
+        try:
+            # Query Folder object for report folders
+            soql = (
+                "SELECT Id, Name, Type, DeveloperName, AccessType, CreatedBy.Name, "
+                "LastModifiedDate FROM Folder "
+                "WHERE Type = 'Report' AND DeveloperName != '' "
+                "ORDER BY Name ASC"
+            )
+            results = self.query_executor.soql_all(soql)
+            folders = []
+            for r in results:
+                created_by = r.get("CreatedBy", {})
+                if isinstance(created_by, dict):
+                    created_by_name = created_by.get("Name", "—")
+                else:
+                    created_by_name = "—"
+                folders.append({
+                    "id": r.get("Id"),
+                    "name": r.get("Name", "Untitled"),
+                    "developerName": r.get("DeveloperName", ""),
+                    "accessType": r.get("AccessType", "Public"),
+                    "createdBy": created_by_name,
+                    "lastModified": r.get("LastModifiedDate", ""),
+                })
+
+            # Categorize folders
+            categorized = {
+                "public": [],
+                "private": [],
+                "shared": [],
+            }
+            for f in folders:
+                access = (f.get("accessType") or "").lower()
+                if "public" in access:
+                    categorized["public"].append(f)
+                elif "hidden" in access:
+                    categorized["private"].append(f)
+                else:
+                    categorized["shared"].append(f)
+
+            return {
+                "folders": folders,
+                "categorized": categorized,
+                "count": len(folders),
+                "message": f"Found {len(folders)} report folders."
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def list_reports(self, folder_id=None, search_term=None, limit=50):
+        """List reports, optionally filtered by folder or search term."""
+        if not self.connected:
+            return {"error": "Not connected to Salesforce."}
+        try:
+            soql = (
+                "SELECT Id, Name, DeveloperName, Description, FolderName, Format, "
+                "LastRunDate, CreatedBy.Name, LastModifiedDate, LastModifiedBy.Name "
+                "FROM Report "
+            )
+            conditions = []
+            if folder_id:
+                conditions.append(f"OwnerId = '{folder_id}'")
+            if search_term:
+                safe = search_term.replace("'", "\\'")
+                conditions.append(f"Name LIKE '%{safe}%'")
+
+            if conditions:
+                soql += "WHERE " + " AND ".join(conditions) + " "
+            soql += f"ORDER BY LastRunDate DESC NULLS LAST LIMIT {limit}"
+
+            print(f"  [REPORTS] Listing reports: {soql}")
+            results = self.query_executor.soql_all(soql)
+
+            reports = []
+            for r in results:
+                created_by = r.get("CreatedBy", {})
+                if isinstance(created_by, dict):
+                    created_by_name = created_by.get("Name", "—")
+                else:
+                    created_by_name = "—"
+
+                last_mod_by = r.get("LastModifiedBy", {})
+                if isinstance(last_mod_by, dict):
+                    last_mod_by_name = last_mod_by.get("Name", "—")
+                else:
+                    last_mod_by_name = "—"
+
+                fmt = r.get("Format", "TABULAR")
+                format_labels = {
+                    "TABULAR": "Tabular",
+                    "SUMMARY": "Summary",
+                    "MATRIX": "Matrix",
+                    "MULTI_BLOCK": "Joined",
+                }
+
+                reports.append({
+                    "id": r.get("Id"),
+                    "name": r.get("Name", "Untitled"),
+                    "developerName": r.get("DeveloperName", ""),
+                    "description": r.get("Description") or "",
+                    "folderName": r.get("FolderName", "—"),
+                    "format": fmt,
+                    "formatLabel": format_labels.get(fmt, fmt),
+                    "lastRunDate": r.get("LastRunDate") or "Never",
+                    "createdBy": created_by_name,
+                    "lastModifiedDate": r.get("LastModifiedDate", ""),
+                    "lastModifiedBy": last_mod_by_name,
+                })
+
+            return {
+                "reports": reports,
+                "count": len(reports),
+                "folder_id": folder_id,
+                "message": f"Found {len(reports)} reports."
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_report_metadata(self, report_id):
+        """Get report metadata (columns, groupings, filters) via Analytics API."""
+        if not self.connected:
+            return {"error": "Not connected to Salesforce."}
+        try:
+            result = self._analytics_request("GET", f"/reports/{report_id}/describe")
+            metadata = result.get("reportMetadata", {})
+            extended = result.get("reportExtendedMetadata", {})
+
+            # Extract column info
+            columns = []
+            detail_columns = metadata.get("detailColumns", [])
+            column_info = extended.get("detailColumnInfo", {})
+            for col in detail_columns:
+                info = column_info.get(col, {})
+                columns.append({
+                    "apiName": col,
+                    "label": info.get("label", col),
+                    "dataType": info.get("dataType", "string"),
+                })
+
+            # Extract groupings
+            groupings = []
+            for g in metadata.get("groupingsDown", []):
+                groupings.append({
+                    "name": g.get("name", ""),
+                    "sortOrder": g.get("sortOrder", "Asc"),
+                    "dateGranularity": g.get("dateGranularity", "NONE"),
+                })
+
+            # Extract existing filters
+            filters = []
+            for f in metadata.get("reportFilters", []):
+                filters.append({
+                    "column": f.get("column", ""),
+                    "operator": f.get("operator", "equals"),
+                    "value": f.get("value", ""),
+                })
+
+            return {
+                "reportId": report_id,
+                "name": metadata.get("name", ""),
+                "reportFormat": metadata.get("reportFormat", "TABULAR"),
+                "columns": columns,
+                "groupings": groupings,
+                "filters": filters,
+                "reportType": metadata.get("reportType", {}).get("label", ""),
+                "message": f"Report '{metadata.get('name', '')}' has {len(columns)} columns, {len(groupings)} groupings, {len(filters)} filters."
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def run_report(self, report_id, filters=None, limit_rows=2000):
+        """Run a Salesforce report via the Analytics API and return formatted results."""
+        if not self.connected:
+            return {"error": "Not connected to Salesforce."}
+        try:
+            # Build request body with optional filters
+            body = {}
+            if filters:
+                report_filters = []
+                for f in filters:
+                    report_filters.append({
+                        "column": f.get("column", ""),
+                        "operator": f.get("operator", "equals"),
+                        "value": f.get("value", ""),
+                    })
+                body["reportMetadata"] = {"reportFilters": report_filters}
+
+            print(f"  [REPORTS] Running report: {report_id}")
+            result = self._analytics_request("POST", f"/reports/{report_id}", data=body if body else None)
+
+            metadata = result.get("reportMetadata", {})
+            extended = result.get("reportExtendedMetadata", {})
+            fact_map = result.get("factMap", {})
+            report_format = metadata.get("reportFormat", "TABULAR")
+
+            # Get column info
+            detail_columns = metadata.get("detailColumns", [])
+            column_info = extended.get("detailColumnInfo", {})
+            agg_info = extended.get("aggregateColumnInfo", {})
+
+            columns = []
+            for col in detail_columns:
+                info = column_info.get(col, {})
+                columns.append({
+                    "apiName": col,
+                    "label": info.get("label", col),
+                    "dataType": info.get("dataType", "string"),
+                })
+
+            # Extract rows from factMap
+            rows = []
+            aggregates = {}
+
+            if report_format == "TABULAR":
+                # Tabular: factMap has "T!T" key
+                t_data = fact_map.get("T!T", {})
+                for row_data in t_data.get("rows", []):
+                    cells = row_data.get("dataCells", [])
+                    row = {}
+                    for i, cell in enumerate(cells):
+                        if i < len(columns):
+                            val = cell.get("label", cell.get("value", ""))
+                            row[columns[i]["label"]] = val
+                    rows.append(row)
+
+                # Get aggregates
+                for agg in t_data.get("aggregates", []):
+                    agg_label = agg.get("label", "")
+                    agg_value = agg.get("value", 0)
+                    if agg_label:
+                        aggregates[agg_label] = agg_value
+
+            elif report_format == "SUMMARY":
+                # Summary: factMap has group keys like "0!T", "1!T", etc.
+                groupings_down = result.get("groupingsDown", {}).get("groupings", [])
+
+                for group in groupings_down:
+                    group_key = group.get("key", "")
+                    group_label = group.get("label", "Unknown")
+                    group_value = group.get("value", "")
+
+                    fact_key = f"{group_key}!T"
+                    g_data = fact_map.get(fact_key, {})
+
+                    for row_data in g_data.get("rows", []):
+                        cells = row_data.get("dataCells", [])
+                        row = {"_group": group_label}
+                        for i, cell in enumerate(cells):
+                            if i < len(columns):
+                                val = cell.get("label", cell.get("value", ""))
+                                row[columns[i]["label"]] = val
+                        rows.append(row)
+
+                    # Group-level aggregates
+                    for agg in g_data.get("aggregates", []):
+                        agg_label = agg.get("label", "")
+                        if agg_label:
+                            if "_group_aggregates" not in aggregates:
+                                aggregates["_group_aggregates"] = []
+                            aggregates["_group_aggregates"].append({
+                                "group": group_label,
+                                "label": agg_label,
+                                "value": agg.get("value", 0),
+                            })
+
+                # Grand total
+                grand = fact_map.get("T!T", {})
+                for agg in grand.get("aggregates", []):
+                    agg_label = agg.get("label", "")
+                    if agg_label:
+                        aggregates[agg_label] = agg.get("value", 0)
+
+            elif report_format == "MATRIX":
+                # Matrix: factMap has keys like "0_0!T", "0_1!T"
+                # Simplified: just extract grand totals and top-level data
+                grand = fact_map.get("T!T", {})
+                for agg in grand.get("aggregates", []):
+                    agg_label = agg.get("label", "")
+                    if agg_label:
+                        aggregates[agg_label] = agg.get("value", 0)
+
+                # Extract rows from available fact entries
+                for key, data in fact_map.items():
+                    if key == "T!T":
+                        continue
+                    for row_data in data.get("rows", []):
+                        cells = row_data.get("dataCells", [])
+                        row = {"_factKey": key}
+                        for i, cell in enumerate(cells):
+                            if i < len(columns):
+                                val = cell.get("label", cell.get("value", ""))
+                                row[columns[i]["label"]] = val
+                        if row and len(row) > 1:
+                            rows.append(row)
+
+            # Cap rows to avoid massive payloads
+            total_rows = len(rows)
+            if total_rows > limit_rows:
+                rows = rows[:limit_rows]
+
+            # Extract grouping info for the frontend
+            groupings = []
+            for g in metadata.get("groupingsDown", []):
+                g_info = extended.get("groupColumnInfo", {}).get(g.get("name", ""), {})
+                groupings.append({
+                    "name": g.get("name", ""),
+                    "label": g_info.get("label", g.get("name", "")),
+                    "sortOrder": g.get("sortOrder", "Asc"),
+                })
+
+            return {
+                "reportId": report_id,
+                "name": metadata.get("name", ""),
+                "reportFormat": report_format,
+                "columns": columns,
+                "rows": rows,
+                "totalRows": total_rows,
+                "rowsReturned": len(rows),
+                "aggregates": aggregates,
+                "groupings": groupings,
+                "filters": metadata.get("reportFilters", []),
+                "reportUrl": f"{self.instance_url}/{report_id}",
+                "message": f"Report '{metadata.get('name', '')}' returned {len(rows)} rows."
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
     def delete_record(self, sobject, record_id):
         if not self.connected:
@@ -1218,6 +1589,89 @@ TOOLS = [
                     ),
                 },
                 required=["object_name", "record_id"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="list_report_folders",
+            description=(
+                "List all Salesforce report folders the current user can access. "
+                "Returns folders categorized by access type: public, private, shared. "
+                "Use this when the user asks about report folders, report categories, "
+                "or wants to browse available reports."
+            ),
+            parameters=types.Schema(type="OBJECT", properties={})
+        ),
+        types.FunctionDeclaration(
+            name="list_reports",
+            description=(
+                "List Salesforce reports, optionally filtered by folder or search term. "
+                "Returns report name, description, folder, format (Tabular/Summary/Matrix), "
+                "last run date, and creator. Use this when the user asks 'show me reports', "
+                "'what reports are in [folder]', 'find reports about [topic]', etc."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "folder_id": types.Schema(
+                        type="STRING",
+                        description="Optional Salesforce folder ID to filter reports by folder."
+                    ),
+                    "search_term": types.Schema(
+                        type="STRING",
+                        description="Optional search term to filter reports by name (partial match)."
+                    ),
+                },
+                required=[]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="run_report",
+            description=(
+                "Execute a Salesforce report by its ID and return the full results including "
+                "columns, rows, aggregates, and groupings. Supports optional runtime filters. "
+                "Use this when the user asks to 'run report [name]', 'show me the results of [report]', "
+                "'execute [report]', or when a report ID is available from a previous list_reports call. "
+                "After getting results, present data in a formatted table and offer to chart it."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "report_id": types.Schema(
+                        type="STRING",
+                        description="The 15 or 18-character Salesforce Report ID."
+                    ),
+                    "filters": types.Schema(
+                        type="ARRAY",
+                        items=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "column": types.Schema(type="STRING", description="API name of the column to filter on"),
+                                "operator": types.Schema(type="STRING", description="Filter operator: 'equals', 'notEqual', 'greaterThan', 'lessThan', 'contains', etc."),
+                                "value": types.Schema(type="STRING", description="Filter value"),
+                            }
+                        ),
+                        description="Optional runtime filters to apply to the report."
+                    ),
+                },
+                required=["report_id"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="get_report_metadata",
+            description=(
+                "Get the structure/metadata of a Salesforce report including its columns, "
+                "groupings, and filters. Use this to understand what data a report contains "
+                "before running it, or to help the user understand what filters are available."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "report_id": types.Schema(
+                        type="STRING",
+                        description="The 15 or 18-character Salesforce Report ID."
+                    ),
+                },
+                required=["report_id"]
             )
         ),
     ])
@@ -1935,7 +2389,202 @@ def handle_function_call(function_call, sf):
                 f"Keep your response under 30 words."
             )
         }
+    elif name == "list_report_folders":
+        print(f"  [REPORTS] Listing report folders...")
+        result = sf.list_report_folders()
+        if "error" in result:
+            print(f"  [Error] {result['error']}")
+        else:
+            print(f"  [REPORTS] Found {result['count']} folders")
+        return result
+    elif name == "list_reports":
+        folder_id = args.get("folder_id")
+        search_term = args.get("search_term")
+        print(f"  [REPORTS] Listing reports (folder={folder_id}, search={search_term})...")
+        result = sf.list_reports(folder_id=folder_id, search_term=search_term)
+        if "error" in result:
+            print(f"  [Error] {result['error']}")
+        else:
+            print(f"  [REPORTS] Found {result['count']} reports")
+        return result
+    elif name == "run_report":
+        report_id = args.get("report_id", "")
+        filters = args.get("filters")
+        if filters:
+            filters = [dict(f) for f in filters]
+        print(f"  [REPORTS] Running report {report_id} (filters={bool(filters)})...")
+        result = sf.run_report(report_id, filters=filters)
+        if "error" in result:
+            print(f"  [Error] {result['error']}")
+        else:
+            print(f"  [REPORTS] Report returned {result.get('rowsReturned', 0)} rows")
+            # Auto-render report as A2UI surface
+            report_surface = _build_a2ui_report_surface(result)
+            if report_surface:
+                _pending_a2ui_surfaces.append(report_surface)
+            # Auto-generate chart from grouping data if available
+            if result.get("groupings") and result.get("aggregates"):
+                group_aggs = result["aggregates"].get("_group_aggregates", [])
+                if group_aggs:
+                    labels = [g["group"] for g in group_aggs]
+                    data = [float(g.get("value", 0)) for g in group_aggs]
+                    if labels and data:
+                        chart_config = {
+                            "chart_type": "bar" if len(labels) > 5 else "doughnut",
+                            "title": result.get("name", "Report Chart"),
+                            "labels": labels,
+                            "data": data,
+                            "dataset_label": group_aggs[0].get("label", "Count"),
+                        }
+                        _pending_charts.append(chart_config)
+        return result
+    elif name == "get_report_metadata":
+        report_id = args.get("report_id", "")
+        print(f"  [REPORTS] Getting metadata for report {report_id}...")
+        result = sf.get_report_metadata(report_id)
+        if "error" in result:
+            print(f"  [Error] {result['error']}")
+        else:
+            print(f"  [REPORTS] Report has {len(result.get('columns', []))} columns")
+        return result
     return {"error": f"Unknown function: {name}"}
+
+
+def _build_a2ui_report_surface(report_result):
+    """Build an A2UI surface for displaying report results with KPIs and metadata."""
+    global _chart_surface_counter
+    if not report_result or "error" in report_result:
+        return None
+
+    rows = report_result.get("rows", [])
+    columns = report_result.get("columns", [])
+    if not columns:
+        return None
+
+    _chart_surface_counter += 1
+    surface_id = f"report-surface-{_chart_surface_counter}"
+
+    # Build KPI cards from aggregates
+    aggregates = report_result.get("aggregates", {})
+    kpi_components = []
+    kpi_ids = []
+    kpi_colors = ["#6366f1", "#06b6d4", "#10b981", "#f59e0b"]
+
+    for key, value in aggregates.items():
+        if key.startswith("_"):
+            continue
+        kpi_id = f"rpt_kpi_{len(kpi_ids)}"
+        kpi_ids.append(kpi_id)
+        if isinstance(value, float):
+            if value >= 1_000_000:
+                display = f"{value/1_000_000:.1f}M"
+            elif value >= 1_000:
+                display = f"{value/1_000:.1f}K"
+            else:
+                display = f"{value:,.0f}"
+        else:
+            display = str(value)
+        kpi_components.append({
+            "id": kpi_id,
+            "component": {
+                "StatsCard": {
+                    "label": {"literalString": key},
+                    "value": {"literalString": display},
+                    "color": kpi_colors[len(kpi_ids) % len(kpi_colors)],
+                }
+            }
+        })
+
+    child_ids = ["rpt_title"]
+    if kpi_ids:
+        child_ids.append("rpt_kpi_row")
+    child_ids.append("rpt_meta")
+
+    components = [
+        {
+            "id": "root",
+            "component": {
+                "Column": {
+                    "gap": 14,
+                    "children": {"explicitList": child_ids}
+                }
+            }
+        },
+        {
+            "id": "rpt_title",
+            "component": {
+                "Text": {
+                    "text": {"literalString": report_result.get("name", "Report")},
+                    "usageHint": "h1",
+                }
+            }
+        },
+    ]
+
+    if kpi_ids:
+        components.append({
+            "id": "rpt_kpi_row",
+            "component": {
+                "Row": {
+                    "gap": 12,
+                    "children": {"explicitList": kpi_ids}
+                }
+            }
+        })
+        components.extend(kpi_components)
+
+    format_label = report_result.get("reportFormat", "TABULAR")
+    total_rows = report_result.get("totalRows", 0)
+    grouping_labels = [g.get("label", "") for g in report_result.get("groupings", [])]
+    grouping_text = f" · Grouped by: {', '.join(grouping_labels)}" if grouping_labels else ""
+    meta_text = f"{format_label} report · {total_rows} rows{grouping_text}"
+
+    components.append({
+        "id": "rpt_meta",
+        "component": {
+            "Text": {
+                "text": {"literalString": meta_text},
+                "usageHint": "caption",
+            }
+        }
+    })
+
+    messages = [
+        {"surfaceId": surface_id, "surfaceUpdate": {"components": components}},
+        {"surfaceId": surface_id, "dataModelUpdate": {"contents": {}}},
+        {"surfaceId": surface_id, "beginRendering": {"root": "root"}}
+    ]
+    return messages
+
+
+# ── Report REST Endpoints ────────────────────────────────────
+
+@app.route("/api/reports/folders")
+def report_folders_route():
+    """Return all report folders."""
+    result = sf.list_report_folders()
+    return jsonify(result)
+
+
+@app.route("/api/reports")
+def reports_list_route():
+    """Return reports, optionally filtered by folder_id or search."""
+    folder_id = request.args.get("folder_id")
+    search = request.args.get("search")
+    result = sf.list_reports(folder_id=folder_id, search_term=search)
+    return jsonify(result)
+
+
+@app.route("/api/reports/run", methods=["POST"])
+def report_run_route():
+    """Execute a report and return its results."""
+    data = request.json
+    report_id = data.get("report_id", "")
+    filters = data.get("filters")
+    if not report_id:
+        return jsonify({"error": "Missing report_id."}), 400
+    result = sf.run_report(report_id, filters=filters)
+    return jsonify(result)
 
 
 # ── Initialize ───────────────────────────────────────────────

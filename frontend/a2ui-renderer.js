@@ -1530,6 +1530,150 @@ function renderA2UIChart(chartConfig) {
 }
 
 
+// ── CUSTOM: ReportTable Component ───────────────────────────
+// Renders report data as a premium interactive table with filters,
+// grouping, aggregates, and a link to the Salesforce report.
+
+registerA2UIComponent('ReportTable', (props, context) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'a2ui-report-surface';
+
+    const title = context.renderer.resolveValue(props.title, context) || 'Report';
+    const format = context.renderer.resolveValue(props.format, context) || 'TABULAR';
+    const reportUrl = context.renderer.resolveValue(props.reportUrl, context) || '';
+    const totalRows = context.renderer.resolveValue(props.totalRows, context) || 0;
+    const columns = props.columns || [];
+    const rows = props.rows || [];
+    const filters = props.filters || [];
+    const aggregates = props.aggregates || {};
+
+    // ── Header ──
+    const header = document.createElement('div');
+    header.className = 'a2ui-report-header';
+    const formatClass = format.toLowerCase().replace(/_/g, '');
+    header.innerHTML = `
+        <div class="a2ui-report-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+        </div>
+        <span class="a2ui-report-title">${escapeA2Html(title)}</span>
+        <span class="a2ui-report-format-badge ${formatClass}">${escapeA2Html(format)}</span>
+        <span class="a2ui-chart-badge">A2UI</span>
+    `;
+    wrapper.appendChild(header);
+
+    // ── Filters ──
+    if (filters.length > 0) {
+        const filtersDiv = document.createElement('div');
+        filtersDiv.className = 'a2ui-report-filters';
+        filters.forEach(f => {
+            const chip = document.createElement('span');
+            chip.className = 'a2ui-report-filter-chip';
+            const col = context.renderer.resolveValue(f.column, context) || '';
+            const op = context.renderer.resolveValue(f.operator, context) || '=';
+            const val = context.renderer.resolveValue(f.value, context) || '';
+            chip.innerHTML = `<span class="filter-key">${escapeA2Html(col)}</span> ${escapeA2Html(op)} ${escapeA2Html(val)}`;
+            filtersDiv.appendChild(chip);
+        });
+        wrapper.appendChild(filtersDiv);
+    }
+
+    // ── Table ──
+    if (columns.length > 0 && rows.length > 0) {
+        const tableWrapper = document.createElement('div');
+        tableWrapper.className = 'a2ui-report-table-wrapper';
+
+        const table = document.createElement('table');
+        table.className = 'a2ui-report-table';
+
+        // Resolve column labels
+        const colLabels = columns.map(c =>
+            context.renderer.resolveValue(c.label || c, context) || ''
+        );
+
+        // Thead
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        colLabels.forEach(label => {
+            const th = document.createElement('th');
+            th.textContent = label;
+            headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        // Tbody
+        const tbody = document.createElement('tbody');
+        let lastGroup = null;
+
+        rows.forEach(row => {
+            // Handle group rows for SUMMARY reports
+            const rowData = (typeof row === 'object' && !Array.isArray(row))
+                ? row : {};
+            const group = rowData._group;
+
+            if (group && group !== lastGroup) {
+                const groupTr = document.createElement('tr');
+                groupTr.className = 'a2ui-report-group-row';
+                const groupTd = document.createElement('td');
+                groupTd.colSpan = colLabels.length;
+                groupTd.textContent = `▸ ${group}`;
+                groupTr.appendChild(groupTd);
+                tbody.appendChild(groupTr);
+                lastGroup = group;
+            }
+
+            const tr = document.createElement('tr');
+            colLabels.forEach(label => {
+                const td = document.createElement('td');
+                td.textContent = rowData[label] || '';
+                td.title = rowData[label] || '';
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+
+        // Aggregate row
+        const aggKeys = Object.keys(aggregates).filter(k => !k.startsWith('_'));
+        if (aggKeys.length > 0) {
+            const totalTr = document.createElement('tr');
+            totalTr.className = 'a2ui-report-total-row';
+            colLabels.forEach((label, i) => {
+                const td = document.createElement('td');
+                if (i === 0) {
+                    td.textContent = 'Total';
+                } else {
+                    const aggVal = aggregates[label];
+                    td.textContent = aggVal !== undefined ? String(aggVal) : '';
+                }
+                totalTr.appendChild(td);
+            });
+            tbody.appendChild(totalTr);
+        }
+
+        table.appendChild(tbody);
+        tableWrapper.appendChild(table);
+        wrapper.appendChild(tableWrapper);
+    }
+
+    // ── Meta Footer ──
+    const meta = document.createElement('div');
+    meta.className = 'a2ui-report-meta';
+    meta.innerHTML = `
+        <span class="a2ui-report-meta-text">
+            <span class="a2ui-report-count-badge">${escapeA2Html(String(totalRows))} rows</span>
+        </span>
+        ${reportUrl ? `<a class="a2ui-report-meta-link" href="${escapeA2Html(reportUrl)}" target="_blank" rel="noopener">Open in Salesforce ↗</a>` : ''}
+    `;
+    wrapper.appendChild(meta);
+
+    return wrapper;
+});
+
+
 // ── Expose globally ─────────────────────────────────────────
 window.A2UI = {
     MessageProcessor: A2UIMessageProcessor,
