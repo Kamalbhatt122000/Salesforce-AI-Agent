@@ -105,22 +105,32 @@ async function loadViewerContext() {
 }
 
 // ── Send Message ────────────────────────────────────────────
+let _attachedFile = null;  // Currently attached file
+
 async function sendMessage() {
     const input = document.getElementById("messageInput");
     const message = input.value.trim();
+    const file = _attachedFile;
 
-    if (!message || isWaiting) return;
+    if ((!message && !file) || isWaiting) return;
 
     // Hide welcome screen
     const welcome = document.getElementById("welcomeScreen");
     if (welcome) welcome.style.display = "none";
 
-    // Add user message
-    addMessage("user", message);
+    // Build display message
+    let displayMsg = message;
+    if (file && !message) {
+        displayMsg = `[Attached: ${file.name}]`;
+    }
 
-    // Clear input
+    // Add user message with file badge if applicable
+    addMessage("user", displayMsg, [], [], [], file ? { name: file.name, size: file.size } : null);
+
+    // Clear input & file
     input.value = "";
     input.style.height = "auto";
+    removeAttachedFile();
     updateSendBtn();
 
     // Show typing indicator
@@ -129,10 +139,36 @@ async function sendMessage() {
     updateSendBtn();
 
     try {
+        let uploadResult = null;
+
+        // Step 1: Upload file if attached
+        if (file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            // If user mentioned a record context, the AI will handle linking later
+
+            console.log(`[Upload] Uploading file: ${file.name} (${formatFileSize(file.size)})`);
+            const uploadRes = await fetch(`${API_BASE}/api/upload-file`, {
+                method: 'POST',
+                body: formData,
+            });
+            uploadResult = await uploadRes.json();
+            console.log('[Upload] Result:', uploadResult);
+        }
+
+        // Step 2: Send chat message (include file context if uploaded)
+        let chatMessage = message;
+        if (uploadResult && !uploadResult.error) {
+            const fileContext = `\n[FILE_UPLOADED: name="${uploadResult.file_name}", content_document_id="${uploadResult.content_document_id}", content_version_id="${uploadResult.content_version_id}", size=${uploadResult.file_size}]`;
+            chatMessage = (message || `I've uploaded a file: ${uploadResult.file_name}`) + fileContext;
+        } else if (uploadResult && uploadResult.error) {
+            chatMessage = (message || 'I tried to upload a file') + `\n[FILE_UPLOAD_ERROR: ${uploadResult.error}]`;
+        }
+
         const res = await fetch(`${API_BASE}/api/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message }),
+            body: JSON.stringify({ message: chatMessage }),
         });
 
         const data = await res.json();
@@ -401,7 +437,7 @@ function sendQuickMessage(text) {
 // ── Add Message to Chat ─────────────────────────────────────
 
 
-function addMessage(role, content, toolCalls = [], charts = [], a2uiSurfaces = []) {
+function addMessage(role, content, toolCalls = [], charts = [], a2uiSurfaces = [], fileInfo = null) {
     const container = document.getElementById("messagesContainer");
 
     const messageDiv = document.createElement("div");
@@ -440,6 +476,20 @@ function addMessage(role, content, toolCalls = [], charts = [], a2uiSurfaces = [
     }
 
     contentDiv.appendChild(bubble);
+
+    // Show file attachment badge for user messages
+    if (fileInfo && role === "user") {
+        const fileBadge = document.createElement("div");
+        fileBadge.className = "file-attachment-badge";
+        const emoji = typeof getFileEmoji === 'function' ? getFileEmoji(fileInfo.name) : '📎';
+        const sizeStr = typeof formatFileSize === 'function' ? formatFileSize(fileInfo.size) : '';
+        fileBadge.innerHTML = `
+            <div class="file-badge-icon">${emoji}</div>
+            <span class="file-badge-name">${escapeHtml(fileInfo.name)}</span>
+            <span class="file-badge-size">${sizeStr}</span>
+        `;
+        contentDiv.appendChild(fileBadge);
+    }
 
     // Render charts via A2UI pipeline
     if (charts && charts.length > 0) {
@@ -626,7 +676,7 @@ function autoResize(textarea) {
 function updateSendBtn() {
     const btn = document.getElementById("sendBtn");
     const input = document.getElementById("messageInput");
-    btn.disabled = !input.value.trim() || isWaiting;
+    btn.disabled = (!input.value.trim() && !_attachedFile) || isWaiting;
 }
 
 // Listen for input changes
@@ -686,3 +736,105 @@ document.addEventListener("click", (e) => {
         }
     }
 });
+
+
+// ── File Attachment System ──────────────────────────────────
+
+const FILE_EMOJIS = {
+    pdf: '📕', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊',
+    csv: '📊', txt: '📄', png: '🖼️', jpg: '🖼️', jpeg: '🖼️',
+    gif: '🖼️', svg: '🖼️', zip: '📦', ppt: '📽️', pptx: '📽️',
+};
+
+function getFileEmoji(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    return FILE_EMOJIS[ext] || '📎';
+}
+
+function formatFileSize(bytes) {
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+}
+
+function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Validate file size (max 25MB for Salesforce ContentVersion)
+    if (file.size > 25 * 1024 * 1024) {
+        alert('File size exceeds 25 MB limit.');
+        event.target.value = '';
+        return;
+    }
+
+    _attachedFile = file;
+
+    // Update preview strip
+    document.getElementById('filePreviewIcon').textContent = getFileEmoji(file.name);
+    document.getElementById('filePreviewName').textContent = file.name;
+    document.getElementById('filePreviewSize').textContent = formatFileSize(file.size);
+    document.getElementById('filePreviewStrip').style.display = 'block';
+
+    updateSendBtn();
+    document.getElementById('messageInput').focus();
+}
+
+function removeAttachedFile() {
+    _attachedFile = null;
+    document.getElementById('fileInput').value = '';
+    document.getElementById('filePreviewStrip').style.display = 'none';
+    updateSendBtn();
+}
+
+// ── Drag-and-Drop Support ───────────────────────────────────
+(function initDragDrop() {
+    const inputArea = document.querySelector('.input-area');
+    if (!inputArea) return;
+
+    let dragCounter = 0;
+
+    inputArea.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter++;
+        inputArea.classList.add('drag-over');
+    });
+
+    inputArea.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter--;
+        if (dragCounter <= 0) {
+            dragCounter = 0;
+            inputArea.classList.remove('drag-over');
+        }
+    });
+
+    inputArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    });
+
+    inputArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter = 0;
+        inputArea.classList.remove('drag-over');
+
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            const file = files[0];
+            if (file.size > 25 * 1024 * 1024) {
+                alert('File size exceeds 25 MB limit.');
+                return;
+            }
+            _attachedFile = file;
+            document.getElementById('filePreviewIcon').textContent = getFileEmoji(file.name);
+            document.getElementById('filePreviewName').textContent = file.name;
+            document.getElementById('filePreviewSize').textContent = formatFileSize(file.size);
+            document.getElementById('filePreviewStrip').style.display = 'block';
+            updateSendBtn();
+        }
+    });
+})();

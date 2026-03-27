@@ -180,6 +180,7 @@ YOUR CAPABILITIES:
 11. Render interactive creation forms in the chat (Lead, Account, Contact, Opportunity)
 12. Render interactive UPDATE forms pre-populated with existing record values
 13. Browse, search, and run Salesforce reports (Tabular, Summary, Matrix) with filters
+14. Upload files and attach them to any Salesforce record (Lead, Account, Contact, Opportunity, Case, etc.)
 
 FORM RENDERING RULE (CRITICAL — NEVER ASK FOR FIELDS, ALWAYS RENDER THE FORM IMMEDIATELY):
 - When the user asks to create ANY record (lead, account, contact, opportunity):
@@ -254,6 +255,22 @@ SALESFORCE REPORTS (CRITICAL — USE THESE TOOLS FOR REPORT REQUESTS):
   • Shared = shared with specific users/roles
   • All = every report you can access
 - NEVER ask the user for a report ID — use the names from list_reports results.
+
+FILE ATTACHMENTS (CRITICAL — HANDLE FILE_UPLOADED CONTEXT TAGS AUTOMATICALLY):
+- When a user uploads a file via the chat, the message will contain a [FILE_UPLOADED: ...] context tag.
+- The tag includes: name, content_document_id, content_version_id, and size.
+- Behavior rules:
+  1. If the user mentions a specific record ("attach to Lead 00Qxx...", "add to this account"):
+     → IMMEDIATELY call attach_file_to_record with the content_document_id and record_id.
+  2. If the user doesn't mention a record but just uploads a file:
+     → Confirm the file was uploaded to Salesforce. Ask which record to attach it to,
+       or offer to search for the record. Show: file name, size, and content_document_id for reference.
+  3. If [FILE_UPLOAD_ERROR: ...] is present → tell the user what went wrong.
+- When asked "what files are on [record]" or "show attachments": call list_record_files.
+  Present the results in a table (Name, Type, Size, Uploaded By, Date) with download links.
+- Supported file types: PDF, Word, Excel, CSV, Images, PowerPoint, ZIP, JSON, XML, HTML.
+- Max file size: 25 MB.
+- Files are stored as ContentVersion in Salesforce and linked via ContentDocumentLink.
 
 WHEN TO USE CHART vs TABLE:
 - metric/gauge  → "How am I doing against target?"
@@ -959,6 +976,154 @@ class SalesforceConnection:
         try:
             self.rest_client.delete(sobject, record_id)
             return {"success": True, "id": record_id, "object": sobject, "message": f"{sobject} record deleted successfully"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ── File Upload & Attachment ───────────────────────────────
+
+    def upload_file(self, file_name, file_data, file_content_type="application/octet-stream"):
+        """Upload a file to Salesforce as a ContentVersion."""
+        if not self.connected:
+            return {"error": "Not connected to Salesforce."}
+        try:
+            import requests as req
+
+            url = f"{self.auth.instance_url}/services/data/v62.0/sobjects/ContentVersion"
+            headers = {
+                "Authorization": f"Bearer {self.auth.access_token}",
+            }
+
+            # Use multipart form-data for binary file upload
+            # The Salesforce REST API accepts ContentVersion as a multipart upload
+            entity_content = json.dumps({
+                "Title": os.path.splitext(file_name)[0],
+                "PathOnClient": file_name,
+            })
+
+            files = {
+                "entity_content": (None, entity_content, "application/json"),
+                "VersionData": (file_name, file_data, file_content_type),
+            }
+
+            print(f"  [FILES] Uploading file: {file_name} ({file_content_type})")
+            response = req.post(url, headers=headers, files=files)
+
+            if response.status_code in (200, 201):
+                result = response.json()
+                content_version_id = result.get("id", "")
+
+                # Get the ContentDocumentId from the newly created ContentVersion
+                cv_query = f"SELECT ContentDocumentId FROM ContentVersion WHERE Id = '{content_version_id}'"
+                cv_result = self.query_executor.soql_all(cv_query)
+                content_document_id = ""
+                if cv_result:
+                    content_document_id = cv_result[0].get("ContentDocumentId", "")
+
+                print(f"  [FILES] Upload successful: CV={content_version_id}, CD={content_document_id}")
+                return {
+                    "success": True,
+                    "content_version_id": content_version_id,
+                    "content_document_id": content_document_id,
+                    "file_name": file_name,
+                    "message": f"File '{file_name}' uploaded successfully.",
+                }
+            else:
+                error_msg = response.text
+                try:
+                    error_msg = json.dumps(response.json(), indent=2)
+                except Exception:
+                    pass
+                print(f"  [FILES] Upload failed: {error_msg}")
+                return {"error": f"File upload failed ({response.status_code}): {error_msg}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def attach_file_to_record(self, content_document_id, record_id):
+        """Link an uploaded file (ContentDocument) to a Salesforce record via ContentDocumentLink."""
+        if not self.connected:
+            return {"error": "Not connected to Salesforce."}
+        try:
+            link_data = {
+                "ContentDocumentId": content_document_id,
+                "LinkedEntityId": record_id,
+                "ShareType": "V",  # Viewer permission
+                "Visibility": "AllUsers",
+            }
+            print(f"  [FILES] Attaching CD={content_document_id} to record {record_id}")
+            result = self.rest_client.create("ContentDocumentLink", link_data)
+            link_id = result if isinstance(result, str) else result.get("id", "")
+            print(f"  [FILES] Attached: CDL={link_id}")
+            return {
+                "success": True,
+                "link_id": link_id,
+                "content_document_id": content_document_id,
+                "record_id": record_id,
+                "message": f"File attached to record {record_id} successfully.",
+            }
+        except Exception as e:
+            error_str = str(e)
+            # Handle duplicate link errors gracefully
+            if "DUPLICATE_VALUE" in error_str:
+                return {
+                    "success": True,
+                    "content_document_id": content_document_id,
+                    "record_id": record_id,
+                    "message": "File is already attached to this record.",
+                }
+            return {"error": error_str}
+
+    def list_record_files(self, record_id):
+        """List all files attached to a Salesforce record."""
+        if not self.connected:
+            return {"error": "Not connected to Salesforce."}
+        try:
+            soql = (
+                "SELECT ContentDocument.Id, ContentDocument.Title, "
+                "ContentDocument.FileExtension, ContentDocument.ContentSize, "
+                "ContentDocument.CreatedDate, ContentDocument.CreatedBy.Name, "
+                "ContentDocument.LatestPublishedVersion.VersionNumber "
+                f"FROM ContentDocumentLink WHERE LinkedEntityId = '{record_id}' "
+                "ORDER BY ContentDocument.CreatedDate DESC"
+            )
+            print(f"  [FILES] Listing files for record: {record_id}")
+            results = self.query_executor.soql_all(soql)
+
+            files = []
+            for r in results:
+                cd = r.get("ContentDocument", {})
+                if not isinstance(cd, dict):
+                    continue
+                created_by = cd.get("CreatedBy", {})
+                if isinstance(created_by, dict):
+                    created_by_name = created_by.get("Name", "—")
+                else:
+                    created_by_name = "—"
+
+                size = cd.get("ContentSize", 0)
+                if size >= 1048576:
+                    size_str = f"{size/1048576:.1f} MB"
+                elif size >= 1024:
+                    size_str = f"{size/1024:.1f} KB"
+                else:
+                    size_str = f"{size} B"
+
+                files.append({
+                    "contentDocumentId": cd.get("Id", ""),
+                    "title": cd.get("Title", "Untitled"),
+                    "extension": cd.get("FileExtension", ""),
+                    "size": size,
+                    "sizeFormatted": size_str,
+                    "createdDate": cd.get("CreatedDate", ""),
+                    "createdBy": created_by_name,
+                    "downloadUrl": f"{self.instance_url}/sfc/servlet.shepherd/document/download/{cd.get('Id', '')}",
+                })
+
+            return {
+                "files": files,
+                "count": len(files),
+                "record_id": record_id,
+                "message": f"Found {len(files)} files attached to record {record_id}.",
+            }
         except Exception as e:
             return {"error": str(e)}
 
@@ -1672,6 +1837,48 @@ TOOLS = [
                     ),
                 },
                 required=["report_id"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="attach_file_to_record",
+            description=(
+                "Attach an already-uploaded file to a Salesforce record. The file must have been "
+                "uploaded first (the user uploads via the chat UI, which returns a content_document_id). "
+                "Use this when the user says 'attach this file to [record]', 'link the uploaded file to [record]', "
+                "or when a FILE_UPLOADED context tag is present in the message and the user mentions a record."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "content_document_id": types.Schema(
+                        type="STRING",
+                        description="The ContentDocumentId of the uploaded file. This is provided in the FILE_UPLOADED context tag."
+                    ),
+                    "record_id": types.Schema(
+                        type="STRING",
+                        description="The Salesforce record ID to attach the file to (e.g., Lead, Account, Contact, Opportunity, Case)."
+                    ),
+                },
+                required=["content_document_id", "record_id"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="list_record_files",
+            description=(
+                "List all files and attachments linked to a specific Salesforce record. "
+                "Returns file names, sizes, types, upload dates, and download links. "
+                "Use this when the user asks 'what files are attached to [record]', "
+                "'show me attachments for [record]', 'list files on this account', etc."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "record_id": types.Schema(
+                        type="STRING",
+                        description="The Salesforce record ID to list files for."
+                    ),
+                },
+                required=["record_id"]
             )
         ),
     ])
@@ -2447,6 +2654,25 @@ def handle_function_call(function_call, sf):
         else:
             print(f"  [REPORTS] Report has {len(result.get('columns', []))} columns")
         return result
+    elif name == "attach_file_to_record":
+        content_document_id = args.get("content_document_id", "")
+        record_id = args.get("record_id", "")
+        print(f"  [FILES] Attaching file CD={content_document_id} to record {record_id}...")
+        result = sf.attach_file_to_record(content_document_id, record_id)
+        if "error" in result:
+            print(f"  [Error] {result['error']}")
+        else:
+            print(f"  [FILES] Attached successfully")
+        return result
+    elif name == "list_record_files":
+        record_id = args.get("record_id", "")
+        print(f"  [FILES] Listing files for record {record_id}...")
+        result = sf.list_record_files(record_id)
+        if "error" in result:
+            print(f"  [Error] {result['error']}")
+        else:
+            print(f"  [FILES] Found {result.get('count', 0)} files")
+        return result
     return {"error": f"Unknown function: {name}"}
 
 
@@ -2584,6 +2810,75 @@ def report_run_route():
     if not report_id:
         return jsonify({"error": "Missing report_id."}), 400
     result = sf.run_report(report_id, filters=filters)
+    return jsonify(result)
+
+
+# ── File Upload Endpoint ─────────────────────────────────────
+
+ALLOWED_FILE_EXTENSIONS = {
+    "pdf", "doc", "docx", "xls", "xlsx", "csv", "txt",
+    "png", "jpg", "jpeg", "gif", "svg", "zip",
+    "ppt", "pptx", "json", "xml", "html",
+}
+
+CONTENT_TYPE_MAP = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "csv": "text/csv",
+    "txt": "text/plain",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "svg": "image/svg+xml",
+    "zip": "application/zip",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "json": "application/json",
+    "xml": "application/xml",
+    "html": "text/html",
+}
+
+
+@app.route("/api/upload-file", methods=["POST"])
+def upload_file_route():
+    """Upload a file to Salesforce as a ContentVersion."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided."}), 400
+
+    file = request.files["file"]
+    if not file.filename:
+        return jsonify({"error": "Empty filename."}), 400
+
+    # Validate extension
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ALLOWED_FILE_EXTENSIONS:
+        return jsonify({"error": f"File type '.{ext}' is not supported. Allowed: {', '.join(sorted(ALLOWED_FILE_EXTENSIONS))}"}), 400
+
+    # Read file data
+    file_data = file.read()
+
+    # Validate size (25 MB max)
+    if len(file_data) > 25 * 1024 * 1024:
+        return jsonify({"error": "File size exceeds 25 MB limit."}), 400
+
+    content_type = CONTENT_TYPE_MAP.get(ext, "application/octet-stream")
+
+    print(f"  [UPLOAD] Received file: {file.filename} ({len(file_data)} bytes, {content_type})")
+    result = sf.upload_file(file.filename, file_data, content_type)
+
+    if "error" not in result:
+        result["file_size"] = len(file_data)
+        if len(file_data) >= 1048576:
+            result["file_size_formatted"] = f"{len(file_data)/1048576:.1f} MB"
+        elif len(file_data) >= 1024:
+            result["file_size_formatted"] = f"{len(file_data)/1024:.1f} KB"
+        else:
+            result["file_size_formatted"] = f"{len(file_data)} B"
+
     return jsonify(result)
 
 
