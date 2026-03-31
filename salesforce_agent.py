@@ -16,14 +16,16 @@ import glob
 import json
 import uuid
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from openai import AzureOpenAI
 
 # ── Load .env ────────────────────────────────────────────────
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "salesforce")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY", "")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 SF_USERNAME = os.getenv("SF_USERNAME", "")
 SF_PASSWORD = os.getenv("SF_PASSWORD", "")
 SF_SECURITY_TOKEN = os.getenv("SF_SECURITY_TOKEN", "")
@@ -678,210 +680,22 @@ class SalesforceConnection:
             return {"error": str(e)}
 
 
-# ── Gemini Function Definitions ──────────────────────────────
+# ── OpenAI Tool Definitions ──────────────────────────────────
 
 TOOLS = [
-    types.Tool(function_declarations=[
-        types.FunctionDeclaration(
-            name="run_soql_query",
-            description="Execute a SOQL query on the live Salesforce org and return the results. Use this whenever the user wants to see data from their Salesforce org.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "query": types.Schema(
-                        type="STRING",
-                        description="The SOQL query to execute, e.g. 'SELECT Id, Name FROM Account LIMIT 10'"
-                    )
-                },
-                required=["query"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="run_sosl_search",
-            description="Execute a SOSL search across multiple objects in the live Salesforce org.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "search": types.Schema(
-                        type="STRING",
-                        description="The SOSL search string, e.g. 'FIND {Acme} IN ALL FIELDS RETURNING Account(Name, Id)'"
-                    )
-                },
-                required=["search"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="list_org_objects",
-            description="List all available objects in the connected Salesforce org.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={}
-            )
-        ),
-        types.FunctionDeclaration(
-            name="describe_object",
-            description="Get all field names, types, and labels for a specific Salesforce object.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The API name of the object to describe, e.g. 'Account', 'Lead', 'Contact'"
-                    )
-                },
-                required=["object_name"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="create_record",
-            description="Create a new record in the Salesforce org. Use this when the user asks to create/add/insert a new record (Contact, Account, Lead, Opportunity, Case, or any object).",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The API name of the object to create, e.g. 'Contact', 'Account', 'Lead', 'Opportunity'"
-                    ),
-                    "field_values": types.Schema(
-                        type="OBJECT",
-                        description="A JSON object of field API names and their values. E.g. {\"FirstName\": \"John\", \"LastName\": \"Doe\", \"Email\": \"john@example.com\", \"AccountId\": \"001xx...\"}"
-                    )
-                },
-                required=["object_name", "field_values"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="update_record",
-            description="Update an existing record in the Salesforce org. Use this when the user asks to update/edit/modify a record.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The API name of the object, e.g. 'Contact', 'Account'"
-                    ),
-                    "record_id": types.Schema(
-                        type="STRING",
-                        description="The 18-character Salesforce record ID to update"
-                    ),
-                    "field_values": types.Schema(
-                        type="OBJECT",
-                        description="A JSON object of field API names and their new values. E.g. {\"Phone\": \"555-1234\", \"Title\": \"VP Sales\"}"
-                    )
-                },
-                required=["object_name", "record_id", "field_values"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="delete_record",
-            description="Delete a record from the Salesforce org. Use this when the user asks to delete/remove a record.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The API name of the object, e.g. 'Contact', 'Account'"
-                    ),
-                    "record_id": types.Schema(
-                        type="STRING",
-                        description="The 18-character Salesforce record ID to delete"
-                    )
-                },
-                required=["object_name", "record_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="get_record_all_fields",
-            description="Fetch a single record with ALL its fields (standard and custom). Automatically describes the object to discover every field, then queries them all. Use this when the user provides a record ID and asks about any field value (e.g. 'give me the mobile number for this lead').",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The API name of the object, e.g. 'Lead', 'Account', 'Contact'. Infer from the record ID prefix: 00Q=Lead, 001=Account, 003=Contact, 006=Opportunity, 500=Case"
-                    ),
-                    "record_id": types.Schema(
-                        type="STRING",
-                        description="The 15 or 18-character Salesforce record ID"
-                    )
-                },
-                required=["object_name", "record_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="create_custom_field",
-            description="Create a new custom field on a Salesforce object using the Tooling API. Supports: Text, Number, Checkbox, Date, DateTime, Email, Phone, Url, Currency, Percent, TextArea, LongTextArea, Picklist. Use when user asks to add/create a new field on an object.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="Object API name, e.g. 'Lead', 'Account', 'Contact', or custom like 'Invoice__c'"),
-                    "field_label": types.Schema(type="STRING", description="Label for the new field, e.g. 'Middle Name'. API name auto-generated with __c suffix."),
-                    "field_type": types.Schema(type="STRING", description="Field type: 'Text', 'Number', 'Checkbox', 'Date', 'DateTime', 'Email', 'Phone', 'Url', 'Currency', 'Percent', 'TextArea', 'LongTextArea', 'Picklist'"),
-                    "length": types.Schema(type="NUMBER", description="Optional. Length for Text (default 255) or LongTextArea (default 32768)"),
-                    "precision": types.Schema(type="NUMBER", description="Optional. Precision for Number/Currency/Percent (total digits, default 18)"),
-                    "scale": types.Schema(type="NUMBER", description="Optional. Scale for Number/Currency/Percent (decimal places)"),
-                    "picklist_values": types.Schema(type="ARRAY", items=types.Schema(type="STRING"), description="Optional. Picklist values list, required when field_type is 'Picklist'"),
-                    "description": types.Schema(type="STRING", description="Optional description for the field"),
-                    "required": types.Schema(type="BOOLEAN", description="Optional. Whether the field is required (default false)")
-                },
-                required=["object_name", "field_label", "field_type"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="delete_custom_field",
-            description="Delete a custom field from a Salesforce object using the Tooling API. Only custom fields (__c) can be deleted. Use when user asks to remove/delete a custom field.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="Object API name, e.g. 'Lead', 'Account'"),
-                    "field_name": types.Schema(type="STRING", description="Custom field API name, e.g. 'Middle_Name__c' or 'Middle_Name' (__c added automatically if missing)")
-                },
-                required=["object_name", "field_name"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="analyze_field_data",
-            description="Fetch raw text data from a specific field across multiple records for AI-powered analysis. Use this when the user asks analytical questions about text/long text fields like 'What are the top pain points?', 'Summarize insights', 'Common themes in feedback', 'Analyze descriptions', etc. The tool fetches the raw text values, then YOU (the AI) analyze them to extract themes, patterns, keywords, sentiments, and insights. ALWAYS use this instead of saying 'I cannot analyze text fields'.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="The API name of the Salesforce object, e.g. 'Lead', 'Case', 'Account', 'Opportunity'"),
-                    "field_name": types.Schema(type="STRING", description="The API name of the text field to analyze, e.g. 'Sales_Insight__c', 'Description', 'Comments__c'. Use describe_object first if unsure."),
-                    "where_clause": types.Schema(type="STRING", description="Optional SOQL WHERE clause to filter records, e.g. \"Status = 'Open'\" or \"CreatedDate = THIS_YEAR\". Do NOT include the WHERE keyword itself."),
-                    "limit": types.Schema(type="NUMBER", description="Optional max records to fetch (default 200). Use higher for broader analysis, lower for quick summaries.")
-                },
-                required=["object_name", "field_name"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="check_calendar",
-            description="Check the user's Salesforce calendar (Events) for a given date range. Returns existing events and available free time slots during business hours (9 AM - 5 PM). Use this when the user asks to book a meeting, schedule a call, check availability, or suggest times. ALWAYS check the calendar before booking to avoid conflicts.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "date": types.Schema(type="STRING", description="The date to check in YYYY-MM-DD format. Defaults to today if not specified."),
-                    "days_ahead": types.Schema(type="NUMBER", description="Number of days to check from the start date (default 1). Use 2-3 for 'this week' or multi-day availability.")
-                },
-                required=[]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="book_meeting",
-            description="Book a meeting or call by creating an Event in Salesforce. Links the event to a Lead or Contact using their record ID. ALWAYS check_calendar first to suggest available times and avoid conflicts.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "subject": types.Schema(type="STRING", description="Meeting subject/title, e.g. 'Call with John Smith', 'Demo meeting', 'Follow-up call'"),
-                    "start_datetime": types.Schema(type="STRING", description="Start date and time in ISO format, e.g. '2026-03-24T10:00:00'. Must be a specific date and time."),
-                    "duration_minutes": types.Schema(type="NUMBER", description="Meeting duration in minutes (default 30). Common values: 15, 30, 45, 60."),
-                    "who_id": types.Schema(type="STRING", description="The Salesforce record ID of the Lead (00Q...) or Contact (003...) this meeting is with."),
-                    "description": types.Schema(type="STRING", description="Optional meeting description or agenda."),
-                    "location": types.Schema(type="STRING", description="Optional meeting location (e.g. 'Zoom', 'Office', phone number).")
-                },
-                required=["subject", "start_datetime"]
-            )
-        ),
-    ])
+    {"type": "function", "function": {"name": "run_soql_query", "description": "Execute a SOQL query on the live Salesforce org and return the results.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "The SOQL query to execute"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "run_sosl_search", "description": "Execute a SOSL search across multiple objects in the live Salesforce org.", "parameters": {"type": "object", "properties": {"search": {"type": "string", "description": "The SOSL search string"}}, "required": ["search"]}}},
+    {"type": "function", "function": {"name": "list_org_objects", "description": "List all available objects in the connected Salesforce org.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "describe_object", "description": "Get all field names, types, and labels for a Salesforce object.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name, e.g. 'Account', 'Lead'"}}, "required": ["object_name"]}}},
+    {"type": "function", "function": {"name": "create_record", "description": "Create a new record in the Salesforce org.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "field_values": {"type": "object", "description": "Field API names and their values"}}, "required": ["object_name", "field_values"]}}},
+    {"type": "function", "function": {"name": "update_record", "description": "Update an existing record in the Salesforce org.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "record_id": {"type": "string", "description": "18-character Salesforce record ID"}, "field_values": {"type": "object", "description": "Field API names and new values"}}, "required": ["object_name", "record_id", "field_values"]}}},
+    {"type": "function", "function": {"name": "delete_record", "description": "Delete a record from the Salesforce org.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "record_id": {"type": "string", "description": "18-character Salesforce record ID"}}, "required": ["object_name", "record_id"]}}},
+    {"type": "function", "function": {"name": "get_record_all_fields", "description": "Fetch a single record with ALL its fields. Use when the user provides a record ID.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name. Infer from ID prefix: 00Q=Lead, 001=Account, 003=Contact"}, "record_id": {"type": "string", "description": "15 or 18-character Salesforce record ID"}}, "required": ["object_name", "record_id"]}}},
+    {"type": "function", "function": {"name": "create_custom_field", "description": "Create a custom field on a Salesforce object using the Tooling API.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "field_label": {"type": "string", "description": "Label for the new field"}, "field_type": {"type": "string", "description": "Field type: Text, Number, Checkbox, Date, DateTime, Email, Phone, Url, Currency, Percent, TextArea, LongTextArea, Picklist"}, "length": {"type": "number", "description": "Optional length"}, "precision": {"type": "number", "description": "Optional precision"}, "scale": {"type": "number", "description": "Optional scale"}, "picklist_values": {"type": "array", "items": {"type": "string"}, "description": "Picklist values"}, "description": {"type": "string", "description": "Field description"}, "required": {"type": "boolean", "description": "Whether the field is required"}}, "required": ["object_name", "field_label", "field_type"]}}},
+    {"type": "function", "function": {"name": "delete_custom_field", "description": "Delete a custom field from a Salesforce object using the Tooling API.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "field_name": {"type": "string", "description": "Custom field API name"}}, "required": ["object_name", "field_name"]}}},
+    {"type": "function", "function": {"name": "analyze_field_data", "description": "Fetch raw text data from a field across records for AI analysis. Use for analytical questions about text fields.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "field_name": {"type": "string", "description": "Text field API name"}, "where_clause": {"type": "string", "description": "Optional WHERE clause (without WHERE keyword)"}, "limit": {"type": "number", "description": "Max records to fetch (default 200)"}}, "required": ["object_name", "field_name"]}}},
+    {"type": "function", "function": {"name": "check_calendar", "description": "Check the user's Salesforce calendar for events and free slots.", "parameters": {"type": "object", "properties": {"date": {"type": "string", "description": "Date in YYYY-MM-DD format"}, "days_ahead": {"type": "number", "description": "Number of days to check (default 1)"}}}}},
+    {"type": "function", "function": {"name": "book_meeting", "description": "Book a meeting/call by creating an Event in Salesforce.", "parameters": {"type": "object", "properties": {"subject": {"type": "string", "description": "Meeting subject"}, "start_datetime": {"type": "string", "description": "Start date/time in ISO format"}, "duration_minutes": {"type": "number", "description": "Duration in minutes (default 30)"}, "who_id": {"type": "string", "description": "Lead or Contact record ID"}, "description": {"type": "string", "description": "Meeting description"}, "location": {"type": "string", "description": "Meeting location"}}, "required": ["subject", "start_datetime"]}}},
 ]
 
 
@@ -909,10 +723,9 @@ def print_banner(instance_url):
     print()
 
 
-def handle_function_call(function_call, sf):
-    """Execute a function call from Gemini and return the result."""
-    name = function_call.name
-    args = function_call.args or {}
+def handle_function_call(name, args, sf):
+    """Execute a function call from OpenAI and return the result."""
+    args = args or {}
 
     if name == "run_soql_query":
         query = args.get("query", "")
@@ -1192,9 +1005,9 @@ def _cli_otp_verify(sf, operation_summary, object_name=None, record_id=None):
 def main():
     """Main chat loop."""
 
-    if not GEMINI_API_KEY:
-        print("\nNo GEMINI_API_KEY found in .env file.")
-        print("Get one at: https://aistudio.google.com/apikey")
+    if not AZURE_OPENAI_KEY or not AZURE_OPENAI_ENDPOINT:
+        print("\nNo AZURE_OPENAI_KEY or AZURE_OPENAI_ENDPOINT found in .env file.")
+        print("Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_KEY, AZURE_OPENAI_DEPLOYMENT in .env")
         return
 
     # Step 1: Connect to Salesforce
@@ -1207,22 +1020,21 @@ def main():
         print("The agent will still work for knowledge questions.")
         instance_url = "Not connected"
 
-    # Step 2: Configure Gemini
+    # Step 2: Configure Azure OpenAI
     print("Loading Salesforce knowledge base...")
     knowledge = load_skill_files()
     print(f"  Loaded {len(knowledge)} knowledge files")
 
-    print("Initializing AI model...")
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    print("Initializing Azure OpenAI model...")
+    client = AzureOpenAI(
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
+        api_key=AZURE_OPENAI_KEY,
+        api_version=AZURE_OPENAI_API_VERSION,
+    )
     system_prompt = build_system_prompt(knowledge)
 
-    chat = client.chats.create(
-        model="gemini-2.5-flash",
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            tools=TOOLS,
-        ),
-    )
+    # Conversation history for OpenAI
+    messages = [{"role": "system", "content": system_prompt}]
     print("  AI agent ready!")
 
     # Step 3: Chat Loop
@@ -1243,45 +1055,63 @@ def main():
             break
 
         if user_input.lower() == "/clear":
-            chat = client.chats.create(
-                model="gemini-2.0-flash",
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=TOOLS,
-                ),
-            )
+            messages = [{"role": "system", "content": system_prompt}]
             print("Conversation cleared.\n")
             continue
 
+        messages.append({"role": "user", "content": user_input})
+
         try:
-            response = chat.send_message(user_input)
+            response = client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+            )
 
-            # Handle function calls (tool use) — supports parallel calls
-            while response.candidates and response.candidates[0].content.parts:
-                # Collect ALL function calls from this turn
-                function_calls = [p for p in response.candidates[0].content.parts if p.function_call]
+            msg = response.choices[0].message
 
-                if not function_calls:
-                    break
+            # Handle function calls loop
+            max_iterations = 10
+            iteration = 0
+            while msg.tool_calls and iteration < max_iterations:
+                iteration += 1
 
-                # Execute ALL function calls and build response parts
-                response_parts = []
-                for fc_part in function_calls:
-                    fc = fc_part.function_call
-                    result = handle_function_call(fc, sf)
-                    response_parts.append(types.Part(
-                        function_response=types.FunctionResponse(
-                            name=fc.name,
-                            response=result
-                        )
-                    ))
+                # Add the assistant message with tool_calls to history
+                messages.append(msg.model_dump())
 
-                # Send ALL function responses back together
-                response = chat.send_message(response_parts)
+                # Execute all tool calls
+                for tool_call in msg.tool_calls:
+                    fn_name = tool_call.function.name
+                    fn_args = json.loads(tool_call.function.arguments)
+                    result = handle_function_call(fn_name, fn_args, sf)
+
+                    # Add tool response to history
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result, default=str),
+                    })
+
+                # Send back to OpenAI for next step
+                response = client.chat.completions.create(
+                    model=AZURE_OPENAI_DEPLOYMENT,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                )
+                msg = response.choices[0].message
+
+            # Add final assistant reply to history
+            messages.append({"role": "assistant", "content": msg.content or ""})
 
             # Print the final text response
-            if response.text:
-                print(f"\nAgent > {response.text}\n")
+            if msg.content:
+                print(f"\nAgent > {msg.content}\n")
+
+            # Keep history manageable
+            if len(messages) > 40:
+                messages = [messages[0]] + messages[-38:]
 
         except Exception as e:
             print(f"\nError: {e}\n")

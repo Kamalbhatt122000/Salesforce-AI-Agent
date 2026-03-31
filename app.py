@@ -14,15 +14,17 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from google import genai
-from google.genai import types
+from openai import AzureOpenAI
 
 
 # ── Load .env ────────────────────────────────────────────────
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "salesforce")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY", "")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 SF_USERNAME = os.getenv("SF_USERNAME", "")
 SF_PASSWORD = os.getenv("SF_PASSWORD", "")
 SF_SECURITY_TOKEN = os.getenv("SF_SECURITY_TOKEN", "")
@@ -1481,408 +1483,35 @@ class SalesforceConnection:
             return {"error": str(e)}
 
 
-# ── Gemini Tools ─────────────────────────────────────────────
+# ── OpenAI Tools ─────────────────────────────────────────────
 
 TOOLS = [
-    types.Tool(function_declarations=[
-        types.FunctionDeclaration(
-            name="run_soql_query",
-            description="Execute a SOQL query on the live Salesforce org and return results.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"query": types.Schema(type="STRING", description="SOQL query string")},
-                required=["query"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="run_sosl_search",
-            description="Execute a SOSL search across multiple objects.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"search": types.Schema(type="STRING", description="SOSL search string")},
-                required=["search"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="list_org_objects",
-            description="List all available objects in the Salesforce org.",
-            parameters=types.Schema(type="OBJECT", properties={})
-        ),
-        types.FunctionDeclaration(
-            name="describe_object",
-            description="Get all field names, types, and labels for a Salesforce object.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={"object_name": types.Schema(type="STRING", description="Object API name")},
-                required=["object_name"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="create_record",
-            description="Create a new record in the Salesforce org. Use this when the user asks to create/add/insert a new record (Contact, Account, Lead, Opportunity, Case, or any object).",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="Object API name, e.g. 'Contact', 'Account'"),
-                    "field_values": types.Schema(type="OBJECT", description="JSON object of field API names and values")
-                },
-                required=["object_name", "field_values"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="update_record",
-            description="Update an existing record in the Salesforce org. Use this when the user asks to update/edit/modify a record.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="Object API name"),
-                    "record_id": types.Schema(type="STRING", description="18-character Salesforce record ID"),
-                    "field_values": types.Schema(type="OBJECT", description="JSON object of field API names and new values")
-                },
-                required=["object_name", "record_id", "field_values"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="delete_record",
-            description="Delete a record from the Salesforce org. Use this when the user asks to delete/remove a record.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="Object API name"),
-                    "record_id": types.Schema(type="STRING", description="18-character Salesforce record ID")
-                },
-                required=["object_name", "record_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="generate_chart",
-            description="Generate a chart/graph visualization from data. Use this AFTER running a SOQL query that returns aggregated/grouped data. Choose chart type intelligently: bar for category comparisons, pie for 2-5 category proportions, doughnut for 3-6 categories, line for time trends, horizontalBar for long labels or 8+ categories.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "chart_type": types.Schema(type="STRING", description="Chart type: 'bar', 'pie', 'doughnut', 'line', or 'horizontalBar'"),
-                    "title": types.Schema(type="STRING", description="Chart title"),
-                    "labels": types.Schema(type="ARRAY", items=types.Schema(type="STRING"), description="Category labels or X-axis labels"),
-                    "data": types.Schema(type="ARRAY", items=types.Schema(type="NUMBER"), description="Numeric values corresponding to each label"),
-                    "dataset_label": types.Schema(type="STRING", description="Label for the dataset, e.g. 'Number of Leads'"),
-                },
-                required=["chart_type", "title", "labels", "data", "dataset_label"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="get_analytics_dashboard",
-            description=(
-                "Get a permission-aware, security-trimmed analytics dashboard for a specific business intent. "
-                "Automatically detects who is logged in, their persona (sales_rep / sales_manager / exec / "
-                "sales_ops / service_manager / service_agent), what Salesforce data they can see (based on "
-                "profiles, permission sets, role hierarchy, OWDs), enforces record-level scope (self/team/global), "
-                "and returns KPIs, chart config, and a drill-down table in a structured payload. "
-                "ALWAYS call this instead of raw SOQL for: pipeline questions, at-risk deals, today's tasks, "
-                "team performance, forecast, inactive accounts, SLA risk cases, data quality."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "intent": types.Schema(
-                        type="STRING",
-                        description=(
-                            "The analytics intent. Allowed values: "
-                            "'my_pipeline' (open opportunities, pipeline value, win rate), "
-                            "'deals_at_risk' (overdue or stalled opportunities), "
-                            "'tasks_today' (tasks due today for the logged-in user), "
-                            "'team_performance' (rep leaderboard, pipeline by rep), "
-                            "'forecast' (closed won vs open pipeline vs target), "
-                            "'no_activity_accounts' (accounts with no activity in 30+ days), "
-                            "'sla_risk_cases' (high-priority open cases at SLA risk), "
-                            "'data_quality' (missing fields, incomplete records, hygiene issues)"
-                        )
-                    ),
-                    "time_range": types.Schema(
-                        type="STRING",
-                        description="Salesforce date literal for the time filter. Default 'THIS_QUARTER'. Examples: THIS_QUARTER, THIS_MONTH, THIS_YEAR, LAST_QUARTER, LAST_N_DAYS:30."
-                    ),
-                },
-                required=["intent"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="get_record_all_fields",
-            description="Fetch a single record with ALL its fields (standard and custom). Automatically describes the object to discover every field, then queries them all. Use this when the user provides a record ID and asks about any field value (e.g. 'give me the mobile number for this lead').",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The API name of the object, e.g. 'Lead', 'Account', 'Contact'. Infer from the record ID prefix: 00Q=Lead, 001=Account, 003=Contact, 006=Opportunity, 500=Case"
-                    ),
-                    "record_id": types.Schema(
-                        type="STRING",
-                        description="The 15 or 18-character Salesforce record ID"
-                    )
-                },
-                required=["object_name", "record_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="create_custom_field",
-            description="Create a new custom field on a Salesforce object using the Tooling API. Supports field types: Text, Number, Checkbox, Date, DateTime, Email, Phone, Url, Currency, Percent, TextArea, LongTextArea, Picklist. Use this when the user asks to add/create a new field on an object.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="The API name of the object to add the field to, e.g. 'Lead', 'Account', 'Contact', or a custom object like 'Invoice__c'"),
-                    "field_label": types.Schema(type="STRING", description="The label for the new field, e.g. 'Middle Name', 'Priority Score'. The API name will be auto-generated with __c suffix."),
-                    "field_type": types.Schema(type="STRING", description="The field type: 'Text', 'Number', 'Checkbox', 'Date', 'DateTime', 'Email', 'Phone', 'Url', 'Currency', 'Percent', 'TextArea', 'LongTextArea', or 'Picklist'"),
-                    "length": types.Schema(type="NUMBER", description="Optional. Length for Text fields (default 255) or LongTextArea (default 32768)"),
-                    "precision": types.Schema(type="NUMBER", description="Optional. Precision for Number/Currency/Percent fields (total digits, default 18)"),
-                    "scale": types.Schema(type="NUMBER", description="Optional. Scale for Number/Currency/Percent fields (decimal places, default 0 for Number, 2 for Currency/Percent)"),
-                    "picklist_values": types.Schema(type="ARRAY", items=types.Schema(type="STRING"), description="Optional. List of picklist values, required when field_type is 'Picklist'"),
-                    "description": types.Schema(type="STRING", description="Optional description/help text for the field"),
-                    "required": types.Schema(type="BOOLEAN", description="Optional. Whether the field is required (default false)")
-                },
-                required=["object_name", "field_label", "field_type"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="delete_custom_field",
-            description="Delete a custom field from a Salesforce object using the Tooling API. Only custom fields (ending in __c) can be deleted. Use this when the user asks to remove/delete a custom field.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="The API name of the object the field belongs to, e.g. 'Lead', 'Account'"),
-                    "field_name": types.Schema(type="STRING", description="The API name of the custom field to delete, e.g. 'Middle_Name__c' or 'Middle_Name' (the __c suffix will be added automatically if missing)")
-                },
-                required=["object_name", "field_name"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="analyze_field_data",
-            description="Fetch raw text data from a specific field across multiple records for AI-powered analysis. Use this when the user asks analytical questions about text/long text fields like 'What are the top pain points?', 'Summarize insights', 'Common themes in feedback', 'Analyze descriptions', etc. The tool fetches the raw text values, then YOU (the AI) analyze them to extract themes, patterns, keywords, sentiments, and insights. ALWAYS use this instead of saying 'I cannot analyze text fields'.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(type="STRING", description="The API name of the Salesforce object, e.g. 'Lead', 'Case', 'Account', 'Opportunity'"),
-                    "field_name": types.Schema(type="STRING", description="The API name of the text field to analyze, e.g. 'Sales_Insight__c', 'Description', 'Comments__c'. Use describe_object first if unsure."),
-                    "where_clause": types.Schema(type="STRING", description="Optional SOQL WHERE clause to filter records, e.g. \"Status = 'Open'\" or \"CreatedDate = THIS_YEAR\". Do NOT include the WHERE keyword itself."),
-                    "limit": types.Schema(type="NUMBER", description="Optional max records to fetch (default 200). Use higher for broader analysis, lower for quick summaries.")
-                },
-                required=["object_name", "field_name"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="check_calendar",
-            description="Check the user's Salesforce calendar (Events) for a given date range. Returns existing events and available free time slots during business hours (9 AM - 5 PM). Use this when the user asks to book a meeting, schedule a call, check availability, or suggest times. ALWAYS check the calendar before booking to avoid conflicts.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "date": types.Schema(type="STRING", description="The date to check in YYYY-MM-DD format. Defaults to today if not specified."),
-                    "days_ahead": types.Schema(type="NUMBER", description="Number of days to check from the start date (default 1). Use 2-3 for 'this week' or multi-day availability.")
-                },
-                required=[]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="book_meeting",
-            description="Book a meeting or call by creating an Event in Salesforce. Links the event to a Lead or Contact using their record ID. ALWAYS check_calendar first to suggest available times and avoid conflicts.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "subject": types.Schema(type="STRING", description="Meeting subject/title, e.g. 'Call with John Smith', 'Demo meeting', 'Follow-up call'"),
-                    "start_datetime": types.Schema(type="STRING", description="Start date and time in ISO format, e.g. '2026-03-24T10:00:00'. Must be a specific date and time."),
-                    "duration_minutes": types.Schema(type="NUMBER", description="Meeting duration in minutes (default 30). Common values: 15, 30, 45, 60."),
-                    "who_id": types.Schema(type="STRING", description="The Salesforce record ID of the Lead (00Q...) or Contact (003...) this meeting is with."),
-                    "description": types.Schema(type="STRING", description="Optional meeting description or agenda."),
-                    "location": types.Schema(type="STRING", description="Optional meeting location (e.g. 'Zoom', 'Office', phone number).")
-                },
-                required=["subject", "start_datetime"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="render_create_form",
-            description=(
-                "Render an interactive creation form in the chat UI for a Salesforce object (Lead, Account, Contact, Opportunity). "
-                "Use this INSTEAD of create_record when the user does NOT provide ALL required field values. "
-                "Pass any values the user DID mention in provided_values so the form is pre-filled. "
-                "Pass any extra field API names the user mentioned (beyond the default form fields) in extra_fields "
-                "so those fields are dynamically added to the form. "
-                "If the user provides ALL required fields, use create_record directly instead."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The Salesforce object API name. E.g. 'Lead', 'Account', 'Contact', 'Opportunity'"
-                    ),
-                    "provided_values": types.Schema(
-                        type="OBJECT",
-                        description="Values the user already provided, as {SFFieldApiName: value}. E.g. {'FirstName': 'John', 'Company': 'Acme'}. These will pre-fill the form."
-                    ),
-                    "extra_fields": types.Schema(
-                        type="ARRAY",
-                        items=types.Schema(type="STRING"),
-                        description="Additional Salesforce field API names the user mentioned that are NOT in the default form schema. E.g. ['Phone', 'Email', 'Title', 'Industry']. These will be added as extra TextFields to the form."
-                    ),
-                },
-                required=["object_name"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="render_update_form",
-            description=(
-                "Render an interactive UPDATE form in the chat UI for an existing Salesforce record. "
-                "The form is pre-populated with the record's current field values so the user can see "
-                "what was previously entered and edit any fields. Use this when the user asks to "
-                "'update a lead', 'edit this account', 'modify the record', etc. "
-                "Pass extra_fields if the user mentions fields not in the default form schema. "
-                "You MUST provide the record_id of the record to update."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "object_name": types.Schema(
-                        type="STRING",
-                        description="The Salesforce object API name. E.g. 'Lead', 'Account', 'Contact', 'Opportunity'"
-                    ),
-                    "record_id": types.Schema(
-                        type="STRING",
-                        description="The Salesforce record ID (e.g. '00Q...' for Lead, '001...' for Account)"
-                    ),
-                    "extra_fields": types.Schema(
-                        type="ARRAY",
-                        items=types.Schema(type="STRING"),
-                        description="Additional SF field API names the user wants to edit that are NOT in the default form. E.g. ['Phone', 'Website', 'Industry']"
-                    ),
-                },
-                required=["object_name", "record_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="list_report_folders",
-            description=(
-                "List all Salesforce report folders the current user can access. "
-                "Returns folders categorized by access type: public, private, shared. "
-                "Use this when the user asks about report folders, report categories, "
-                "or wants to browse available reports."
-            ),
-            parameters=types.Schema(type="OBJECT", properties={})
-        ),
-        types.FunctionDeclaration(
-            name="list_reports",
-            description=(
-                "List Salesforce reports, optionally filtered by folder or search term. "
-                "Returns report name, description, folder, format (Tabular/Summary/Matrix), "
-                "last run date, and creator. Use this when the user asks 'show me reports', "
-                "'what reports are in [folder]', 'find reports about [topic]', etc."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "folder_id": types.Schema(
-                        type="STRING",
-                        description="Optional Salesforce folder ID to filter reports by folder."
-                    ),
-                    "search_term": types.Schema(
-                        type="STRING",
-                        description="Optional search term to filter reports by name (partial match)."
-                    ),
-                },
-                required=[]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="run_report",
-            description=(
-                "Execute a Salesforce report by its ID and return the full results including "
-                "columns, rows, aggregates, and groupings. Supports optional runtime filters. "
-                "Use this when the user asks to 'run report [name]', 'show me the results of [report]', "
-                "'execute [report]', or when a report ID is available from a previous list_reports call. "
-                "After getting results, present data in a formatted table and offer to chart it."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "report_id": types.Schema(
-                        type="STRING",
-                        description="The 15 or 18-character Salesforce Report ID."
-                    ),
-                    "filters": types.Schema(
-                        type="ARRAY",
-                        items=types.Schema(
-                            type="OBJECT",
-                            properties={
-                                "column": types.Schema(type="STRING", description="API name of the column to filter on"),
-                                "operator": types.Schema(type="STRING", description="Filter operator: 'equals', 'notEqual', 'greaterThan', 'lessThan', 'contains', etc."),
-                                "value": types.Schema(type="STRING", description="Filter value"),
-                            }
-                        ),
-                        description="Optional runtime filters to apply to the report."
-                    ),
-                },
-                required=["report_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="get_report_metadata",
-            description=(
-                "Get the structure/metadata of a Salesforce report including its columns, "
-                "groupings, and filters. Use this to understand what data a report contains "
-                "before running it, or to help the user understand what filters are available."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "report_id": types.Schema(
-                        type="STRING",
-                        description="The 15 or 18-character Salesforce Report ID."
-                    ),
-                },
-                required=["report_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="attach_file_to_record",
-            description=(
-                "Attach an already-uploaded file to a Salesforce record. The file must have been "
-                "uploaded first (the user uploads via the chat UI, which returns a content_document_id). "
-                "Use this when the user says 'attach this file to [record]', 'link the uploaded file to [record]', "
-                "or when a FILE_UPLOADED context tag is present in the message and the user mentions a record."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "content_document_id": types.Schema(
-                        type="STRING",
-                        description="The ContentDocumentId of the uploaded file. This is provided in the FILE_UPLOADED context tag."
-                    ),
-                    "record_id": types.Schema(
-                        type="STRING",
-                        description="The Salesforce record ID to attach the file to (e.g., Lead, Account, Contact, Opportunity, Case)."
-                    ),
-                },
-                required=["content_document_id", "record_id"]
-            )
-        ),
-        types.FunctionDeclaration(
-            name="list_record_files",
-            description=(
-                "List all files and attachments linked to a specific Salesforce record. "
-                "Returns file names, sizes, types, upload dates, and download links. "
-                "Use this when the user asks 'what files are attached to [record]', "
-                "'show me attachments for [record]', 'list files on this account', etc."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "record_id": types.Schema(
-                        type="STRING",
-                        description="The Salesforce record ID to list files for."
-                    ),
-                },
-                required=["record_id"]
-            )
-        ),
-    ])
+    {"type": "function", "function": {"name": "run_soql_query", "description": "Execute a SOQL query on the live Salesforce org and return results.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "SOQL query string"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "run_sosl_search", "description": "Execute a SOSL search across multiple objects.", "parameters": {"type": "object", "properties": {"search": {"type": "string", "description": "SOSL search string"}}, "required": ["search"]}}},
+    {"type": "function", "function": {"name": "list_org_objects", "description": "List all available objects in the Salesforce org.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "describe_object", "description": "Get all field names, types, and labels for a Salesforce object.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}}, "required": ["object_name"]}}},
+    {"type": "function", "function": {"name": "create_record", "description": "Create a new record in the Salesforce org.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "field_values": {"type": "object", "description": "Field API names and values"}}, "required": ["object_name", "field_values"]}}},
+    {"type": "function", "function": {"name": "update_record", "description": "Update an existing record in the Salesforce org.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "record_id": {"type": "string", "description": "18-character Salesforce record ID"}, "field_values": {"type": "object", "description": "Field API names and new values"}}, "required": ["object_name", "record_id", "field_values"]}}},
+    {"type": "function", "function": {"name": "delete_record", "description": "Delete a record from the Salesforce org.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "record_id": {"type": "string", "description": "18-character Salesforce record ID"}}, "required": ["object_name", "record_id"]}}},
+    {"type": "function", "function": {"name": "generate_chart", "description": "Generate a chart/graph visualization from data.", "parameters": {"type": "object", "properties": {"chart_type": {"type": "string", "description": "Chart type: bar, pie, doughnut, line, or horizontalBar"}, "title": {"type": "string", "description": "Chart title"}, "labels": {"type": "array", "items": {"type": "string"}, "description": "Category labels"}, "data": {"type": "array", "items": {"type": "number"}, "description": "Numeric values"}, "dataset_label": {"type": "string", "description": "Dataset label"}}, "required": ["chart_type", "title", "labels", "data", "dataset_label"]}}},
+    {"type": "function", "function": {"name": "get_analytics_dashboard", "description": "Get a permission-aware analytics dashboard for a business intent. Intents: my_pipeline, deals_at_risk, tasks_today, team_performance, forecast, no_activity_accounts, sla_risk_cases, data_quality.", "parameters": {"type": "object", "properties": {"intent": {"type": "string", "description": "Analytics intent"}, "time_range": {"type": "string", "description": "Salesforce date literal, default THIS_QUARTER"}}, "required": ["intent"]}}},
+    {"type": "function", "function": {"name": "get_record_all_fields", "description": "Fetch a single record with ALL its fields.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "record_id": {"type": "string", "description": "Record ID"}}, "required": ["object_name", "record_id"]}}},
+    {"type": "function", "function": {"name": "create_custom_field", "description": "Create a custom field on a Salesforce object.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "field_label": {"type": "string", "description": "Field label"}, "field_type": {"type": "string", "description": "Field type"}, "length": {"type": "number"}, "precision": {"type": "number"}, "scale": {"type": "number"}, "picklist_values": {"type": "array", "items": {"type": "string"}}, "description": {"type": "string"}, "required": {"type": "boolean"}}, "required": ["object_name", "field_label", "field_type"]}}},
+    {"type": "function", "function": {"name": "delete_custom_field", "description": "Delete a custom field from a Salesforce object.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "field_name": {"type": "string", "description": "Custom field API name"}}, "required": ["object_name", "field_name"]}}},
+    {"type": "function", "function": {"name": "analyze_field_data", "description": "Fetch raw text data from a field across records for AI analysis.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string"}, "field_name": {"type": "string"}, "where_clause": {"type": "string"}, "limit": {"type": "number"}}, "required": ["object_name", "field_name"]}}},
+    {"type": "function", "function": {"name": "check_calendar", "description": "Check the user's Salesforce calendar for events and free slots.", "parameters": {"type": "object", "properties": {"date": {"type": "string", "description": "Date in YYYY-MM-DD format"}, "days_ahead": {"type": "number"}}}}},
+    {"type": "function", "function": {"name": "book_meeting", "description": "Book a meeting/call by creating an Event in Salesforce.", "parameters": {"type": "object", "properties": {"subject": {"type": "string"}, "start_datetime": {"type": "string"}, "duration_minutes": {"type": "number"}, "who_id": {"type": "string"}, "description": {"type": "string"}, "location": {"type": "string"}}, "required": ["subject", "start_datetime"]}}},
+    {"type": "function", "function": {"name": "render_create_form", "description": "Render an interactive creation form in the chat UI for a Salesforce object.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string", "description": "Object API name"}, "provided_values": {"type": "object", "description": "Pre-fill values"}, "extra_fields": {"type": "array", "items": {"type": "string"}, "description": "Extra field API names"}}, "required": ["object_name"]}}},
+    {"type": "function", "function": {"name": "render_update_form", "description": "Render an interactive update form for an existing Salesforce record.", "parameters": {"type": "object", "properties": {"object_name": {"type": "string"}, "record_id": {"type": "string"}, "extra_fields": {"type": "array", "items": {"type": "string"}}}, "required": ["object_name", "record_id"]}}},
+    {"type": "function", "function": {"name": "list_report_folders", "description": "List all Salesforce report folders.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "list_reports", "description": "List Salesforce reports, optionally filtered by folder or search term.", "parameters": {"type": "object", "properties": {"folder_id": {"type": "string"}, "search_term": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "run_report", "description": "Execute a Salesforce report by its ID.", "parameters": {"type": "object", "properties": {"report_id": {"type": "string"}, "filters": {"type": "array", "items": {"type": "object", "properties": {"column": {"type": "string"}, "operator": {"type": "string"}, "value": {"type": "string"}}}}}, "required": ["report_id"]}}},
+    {"type": "function", "function": {"name": "get_report_metadata", "description": "Get the structure/metadata of a Salesforce report.", "parameters": {"type": "object", "properties": {"report_id": {"type": "string"}}, "required": ["report_id"]}}},
+    {"type": "function", "function": {"name": "attach_file_to_record", "description": "Attach an uploaded file to a Salesforce record.", "parameters": {"type": "object", "properties": {"content_document_id": {"type": "string"}, "record_id": {"type": "string"}}, "required": ["content_document_id", "record_id"]}}},
+    {"type": "function", "function": {"name": "list_record_files", "description": "List all files attached to a Salesforce record.", "parameters": {"type": "object", "properties": {"record_id": {"type": "string"}}, "required": ["record_id"]}}},
 ]
+
+
 
 
 # Global list to collect chart configs during a single request
@@ -2341,12 +1970,10 @@ def _build_a2ui_form_surface(object_name: str, mode: str = "create", record_id: 
     return messages
 
 
-
-
-def handle_function_call(function_call, sf):
+def handle_function_call(fn_name, fn_args, sf):
     global _pending_charts, _pending_a2ui_surfaces
-    name = function_call.name
-    args = function_call.args or {}
+    name = fn_name
+    args = fn_args or {}
 
     if name == "run_soql_query":
         return sf.run_soql(args.get("query", ""))
@@ -2895,7 +2522,11 @@ for s in skill_registry:
     print(f"    • {s['name']}")
 
 system_prompt = build_system_prompt(knowledge, skill_registry)
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+openai_client = AzureOpenAI(
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_key=AZURE_OPENAI_KEY,
+    api_version=AZURE_OPENAI_API_VERSION,
+)
 
 # Connect to Salesforce
 sf = SalesforceConnection()
@@ -2918,7 +2549,7 @@ except Exception as e:
 # Conversation history (per-session, single user for now)
 conversation_history = []
 MAX_HISTORY_TURNS = 20  # keep last N turns to avoid context bloat
-MAX_RECORDS_TO_MODEL = 50  # cap records sent back to Gemini
+MAX_RECORDS_TO_MODEL = 50  # cap records sent back to the model
 
 
 def trim_history():
@@ -2993,10 +2624,10 @@ def create_record_form():
 
         # Add to conversation history so AI knows what happened
         conversation_history.append(
-            types.Content(role="user", parts=[types.Part(text=
+            {"role": "user", "content":
                 f"[SYSTEM: User submitted a form and created a new {obj_name} record with ID: {result['id']}. "
                 f"Fields: {json.dumps(field_values)}]"
-            )])
+            }
         )
 
         return jsonify({
@@ -3027,10 +2658,10 @@ def form_submit():
             if "error" in result:
                 return jsonify({"error": result["error"]})
             conversation_history.append(
-                types.Content(role="user", parts=[types.Part(text=
+                {"role": "user", "content":
                     f"[SYSTEM: User created a new {obj_name} record via form. ID: {result['id']}. "
                     f"Fields: {json.dumps(field_values)}]"
-                )])
+                }
             )
             return jsonify({"success": True, "id": result["id"], "object": obj_name})
         elif action.startswith("update"):
@@ -3040,10 +2671,10 @@ def form_submit():
             if "error" in result:
                 return jsonify({"error": result["error"]})
             conversation_history.append(
-                types.Content(role="user", parts=[types.Part(text=
+                {"role": "user", "content":
                     f"[SYSTEM: User updated {obj_name} record ({record_id}) via form. "
                     f"Updated fields: {json.dumps(field_values)}]"
-                )])
+                }
             )
             return jsonify({"success": True, "id": record_id, "object": obj_name})
         else:
@@ -3076,123 +2707,102 @@ def chat():
     _pending_a2ui_surfaces = []
 
     # Add user message to history
-    conversation_history.append(
-        types.Content(role="user", parts=[types.Part(text=user_message)])
-    )
+    conversation_history.append({"role": "user", "content": user_message})
 
     try:
         # Trim history to avoid context overflow
         trim_history()
 
-        # Send to Gemini
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=conversation_history,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                tools=TOOLS,
-            ),
+        # Build messages with system prompt
+        messages = [{"role": "system", "content": system_prompt}] + conversation_history
+
+        # Send to Azure OpenAI
+        response = openai_client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=messages,
+            tools=TOOLS,
+            tool_choice="auto",
         )
 
         # Track tool calls for the frontend
-        tool_calls = []
+        tool_calls_log = []
         # Track OTP verification requests triggered during this chat
         otp_requests = []
 
-        # Handle function calls loop (supports parallel function calls)
+        msg = response.choices[0].message
+
+        # Handle function calls loop
         max_iterations = 10
         iteration = 0
-        while response.candidates and response.candidates[0].content.parts and iteration < max_iterations:
-            parts = response.candidates[0].content.parts
-
-            # Collect ALL function calls from this turn
-            function_calls = [p for p in parts if p.function_call]
-
-            if not function_calls:
-                break
-
+        while msg.tool_calls and iteration < max_iterations:
             iteration += 1
 
-            # Add model's function call turn to history
-            conversation_history.append(response.candidates[0].content)
+            # Add the assistant message with tool_calls to history
+            conversation_history.append(msg.model_dump())
 
-            # Execute ALL function calls and build response parts
-            response_parts = []
-            for fc_part in function_calls:
-                fc = fc_part.function_call
+            # Execute ALL tool calls and build response messages
+            for tool_call in msg.tool_calls:
+                fn_name = tool_call.function.name
+                fn_args = json.loads(tool_call.function.arguments)
 
                 # Record the tool call
-                tool_calls.append({
-                    "name": fc.name,
-                    "args": dict(fc.args) if fc.args else {},
+                tool_calls_log.append({
+                    "name": fn_name,
+                    "args": fn_args,
                 })
 
                 # Execute the function
-                result = handle_function_call(fc, sf)
+                result = handle_function_call(fn_name, fn_args, sf)
 
                 # Check if this result requires OTP
                 if isinstance(result, dict) and result.get("otp_required"):
                     otp_requests.append(result)
-                    # Tell the model that OTP is required so it can inform the user
                     result_for_model = {
                         "otp_required": True,
                         "message": result["message"],
                     }
                 else:
-                    # Truncate large results so Gemini doesn't echo huge tables
+                    # Truncate large results
                     result_for_model = truncate_result(result)
 
-                # Build a FunctionResponse part for this call
-                response_parts.append(types.Part(
-                    function_response=types.FunctionResponse(
-                        name=fc.name,
-                        response=result_for_model
-                    )
-                ))
+                # Add tool response to history
+                conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result_for_model, default=str),
+                })
 
-            # Send ALL function responses back together as a single Content
-            conversation_history.append(types.Content(
-                role="user",
-                parts=response_parts
-            ))
-
-            # If OTP is required, stop the loop — don't ask Gemini for more tool calls
+            # If OTP is required, stop the loop
             if otp_requests:
-                # Give Gemini the OTP message so it can respond accordingly
-                response = gemini_client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=conversation_history,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        tools=TOOLS,
-                    ),
+                messages = [{"role": "system", "content": system_prompt}] + conversation_history
+                response = openai_client.chat.completions.create(
+                    model=AZURE_OPENAI_DEPLOYMENT,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
                 )
+                msg = response.choices[0].message
                 break
 
-            # Send back to Gemini
-            response = gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=conversation_history,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=TOOLS,
-                ),
+            # Send back to OpenAI for next step
+            messages = [{"role": "system", "content": system_prompt}] + conversation_history
+            response = openai_client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
             )
+            msg = response.choices[0].message
 
-        # Add final response to history
-        if response.candidates:
-            conversation_history.append(response.candidates[0].content)
+        # Add final assistant reply to history
+        conversation_history.append({"role": "assistant", "content": msg.content or ""})
 
-        # Safely extract text, handling None and empty responses
-        try:
-            reply = response.text if response.text else "I couldn't generate a response."
-        except Exception:
-            # response.text can raise if there are no text parts
-            reply = "I couldn't generate a response. Please try again."
+        # Extract reply text
+        reply = msg.content or "I couldn't generate a response. Please try again."
 
         response_payload = {
             "reply": reply,
-            "tool_calls": tool_calls,
+            "tool_calls": tool_calls_log,
             "charts": _pending_charts,
             "a2ui_surfaces": _pending_a2ui_surfaces,
         }
